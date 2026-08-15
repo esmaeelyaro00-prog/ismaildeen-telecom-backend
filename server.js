@@ -83,7 +83,51 @@ app.post("/api/payment/initialize", async (req, res) => {
         });
     }
 });
+// Verify Paystack Payment
+app.get("/api/payment/verify/:reference", async (req, res) => {
+    try {
+        const { reference } = req.params;
 
+        if (!reference) {
+            return res.status(400).json({
+                success: false,
+                message: "Transaction reference is required"
+            });
+        }
+
+        const response = await axios.get(
+            `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
+            {
+                headers: {
+                    Authorization:
+                        `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
+                }
+            }
+        );
+
+        const payment = response.data.data;
+
+        return res.json({
+            success: true,
+            status: payment.status,
+            reference: payment.reference,
+            amount: payment.amount,
+            currency: payment.currency,
+            paidAt: payment.paid_at || null
+        });
+
+    } catch (error) {
+        console.error(
+            "Paystack verification error:",
+            error.response?.data || error.message
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: "Unable to verify payment"
+        });
+    }
+});
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
