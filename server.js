@@ -19,6 +19,7 @@ app.use(express.json());
 let db = null;
 
 try {
+
     const serviceAccount = require(
         "/etc/secrets/firebase-service-account.json"
     );
@@ -29,7 +30,9 @@ try {
 
     db = admin.firestore();
 
-    console.log("Firebase Admin initialized successfully");
+    console.log(
+        "Firebase Admin initialized successfully"
+    );
 
 } catch (error) {
 
@@ -38,6 +41,7 @@ try {
         error.message
     );
 }
+
 
 /*
  * =========================
@@ -54,6 +58,7 @@ app.get("/", (req, res) => {
 
 });
 
+
 /*
  * =========================
  * HEALTH
@@ -69,6 +74,7 @@ app.get("/api/health", (req, res) => {
 
 });
 
+
 /*
  * =========================
  * PAYMENT TEST
@@ -83,6 +89,7 @@ app.get("/api/payment/test", (req, res) => {
     });
 
 });
+
 
 /*
  * =========================
@@ -147,6 +154,117 @@ app.get("/api/firebase/test", async (req, res) => {
 
 });
 
+
+/*
+ * =========================
+ * WALLET TEST
+ * =========================
+ *
+ * Wannan route yana nuna wallet
+ * na UID ɗin da aka bayar.
+ *
+ * Example:
+ * /api/wallet/USER_UID
+ *
+ */
+
+app.get("/api/wallet/:uid", async (req, res) => {
+
+    try {
+
+        if (!db) {
+
+            return res.status(500).json({
+                success: false,
+                message: "Firebase is not initialized"
+            });
+
+        }
+
+        const uid =
+            req.params.uid;
+
+        if (!uid) {
+
+            return res.status(400).json({
+                success: false,
+                message: "UID is required"
+            });
+
+        }
+
+        const userDoc =
+            await db
+                .collection("users")
+                .doc(uid)
+                .get();
+
+        if (!userDoc.exists) {
+
+            return res.status(404).json({
+
+                success: false,
+
+                message:
+                    "User not found",
+
+                uid:
+                    uid
+
+            });
+
+        }
+
+        const data =
+            userDoc.data();
+
+        const walletBalance =
+            Number(
+                data.walletBalance || 0
+            );
+
+        res.json({
+
+            success: true,
+
+            uid:
+                uid,
+
+            email:
+                data.email || null,
+
+            phone:
+                data.phone || null,
+
+            walletBalance:
+                walletBalance
+
+        });
+
+    } catch (error) {
+
+        console.error(
+            "Wallet error:",
+            error.message
+        );
+
+        res.status(500).json({
+
+            success: false,
+
+            message:
+                "Unable to read wallet",
+
+            error:
+                error.message
+
+        });
+
+    }
+
+});
+
+
 /*
  * =========================
  * INITIALIZE PAYSTACK PAYMENT
@@ -165,8 +283,9 @@ app.post(
                 uid
             } = req.body;
 
+
             /*
-             * Check required data
+             * Check required fields
              */
 
             if (
@@ -186,6 +305,7 @@ app.post(
 
             }
 
+
             /*
              * Check Firebase
              */
@@ -203,8 +323,9 @@ app.post(
 
             }
 
+
             /*
-             * Check Paystack secret key
+             * Check Paystack Secret Key
              */
 
             if (
@@ -221,6 +342,7 @@ app.post(
                 });
 
             }
+
 
             /*
              * Validate amount
@@ -247,6 +369,7 @@ app.post(
 
             }
 
+
             /*
              * Convert Naira to Kobo
              */
@@ -256,9 +379,9 @@ app.post(
                     amountNumber * 100
                 );
 
+
             /*
-             * Generate Firebase
-             * transaction document
+             * Create transaction document
              */
 
             const transactionRef =
@@ -270,6 +393,7 @@ app.post(
 
             const transactionId =
                 transactionRef.id;
+
 
             /*
              * Initialize Paystack
@@ -319,8 +443,10 @@ app.post(
 
                 );
 
+
             const paymentData =
                 response.data.data;
+
 
             /*
              * Save pending transaction
@@ -356,8 +482,10 @@ app.post(
 
             });
 
+
             /*
-             * Send payment URL to Android
+             * Send payment data
+             * back to Android
              */
 
             res.json({
@@ -386,9 +514,12 @@ app.post(
         } catch (error) {
 
             console.error(
+
                 "Paystack initialization error:",
+
                 error.response?.data ||
                 error.message
+
             );
 
             res.status(500).json({
@@ -406,6 +537,7 @@ app.post(
     }
 );
 
+
 /*
  * =========================
  * VERIFY PAYSTACK PAYMENT
@@ -421,6 +553,7 @@ app.get(
             const {
                 reference
             } = req.params;
+
 
             /*
              * Check reference
@@ -440,6 +573,7 @@ app.get(
 
             }
 
+
             /*
              * Check Firebase
              */
@@ -457,6 +591,7 @@ app.get(
                 });
 
             }
+
 
             /*
              * Check Paystack key
@@ -478,6 +613,7 @@ app.get(
 
             }
 
+
             /*
              * Find transaction
              */
@@ -495,11 +631,14 @@ app.get(
                     .limit(1)
                     .get();
 
+
             /*
              * Transaction not found
              */
 
-            if (snapshot.empty) {
+            if (
+                snapshot.empty
+            ) {
 
                 return res.status(404).json({
 
@@ -513,14 +652,16 @@ app.get(
 
             }
 
+
             const transactionDoc =
                 snapshot.docs[0];
 
             const transaction =
                 transactionDoc.data();
 
+
             /*
-             * Prevent double wallet credit
+             * Prevent duplicate credit
              */
 
             if (
@@ -546,8 +687,9 @@ app.get(
 
             }
 
+
             /*
-             * Verify payment with Paystack
+             * Verify with Paystack
              */
 
             const response =
@@ -568,11 +710,13 @@ app.get(
 
                 );
 
+
             const payment =
                 response.data.data;
 
+
             /*
-             * Payment is not successful
+             * Check payment status
              */
 
             if (
@@ -608,6 +752,7 @@ app.get(
 
             }
 
+
             /*
              * Check payment amount
              */
@@ -629,14 +774,17 @@ app.get(
 
             }
 
+
             /*
              * =========================
-             * CREDIT USER WALLET
+             * CREDIT WALLET
              * =========================
              *
              * IMPORTANT:
-             * Firestore field is "wallet",
-             * not "walletBalance".
+             *
+             * Firestore field:
+             * walletBalance
+             *
              */
 
             await db.runTransaction(
@@ -644,8 +792,9 @@ app.get(
                     firestoreTransaction
                 ) => {
 
+
                     /*
-                     * User document
+                     * User reference
                      */
 
                     const userRef =
@@ -657,12 +806,14 @@ app.get(
                                 transaction.userId
                             );
 
+
                     /*
-                     * Wallet transaction document
+                     * Wallet transaction reference
                      */
 
                     const walletTransactionRef =
                         transactionDoc.ref;
+
 
                     /*
                      * Read user
@@ -673,6 +824,7 @@ app.get(
                             userRef
                         );
 
+
                     /*
                      * Read transaction
                      */
@@ -682,11 +834,14 @@ app.get(
                             walletTransactionRef
                         );
 
+
                     const currentTransaction =
                         transactionSnapshot.data();
 
+
                     /*
-                     * Prevent duplicate credit
+                     * Double-check
+                     * to prevent duplicate credit
                      */
 
                     if (
@@ -699,20 +854,22 @@ app.get(
 
                     }
 
+
                     /*
-                     * Get existing wallet balance
+                     * Get current wallet
                      *
-                     * Firestore field:
-                     * wallet
+                     * IMPORTANT:
+                     * walletBalance
                      */
 
                     const currentBalance =
                         userSnapshot.exists
                             ? Number(
                                 userSnapshot.data()
-                                    .wallet || 0
+                                    .walletBalance || 0
                             )
                             : 0;
+
 
                     /*
                      * Add payment amount
@@ -724,8 +881,9 @@ app.get(
                             transaction.amount
                         );
 
+
                     /*
-                     * Update USER wallet
+                     * Update user wallet
                      */
 
                     firestoreTransaction.set(
@@ -734,7 +892,7 @@ app.get(
 
                         {
 
-                            wallet:
+                            walletBalance:
                                 newBalance,
 
                             updatedAt:
@@ -753,8 +911,9 @@ app.get(
 
                     );
 
+
                     /*
-                     * Mark payment completed
+                     * Mark transaction completed
                      */
 
                     firestoreTransaction.update(
@@ -785,10 +944,9 @@ app.get(
                 }
             );
 
+
             /*
-             * =========================
-             * SUCCESS RESPONSE
-             * =========================
+             * Successful response
              */
 
             res.json({
@@ -834,7 +992,10 @@ app.get(
                     false,
 
                 message:
-                    "Unable to verify payment"
+                    "Unable to verify payment",
+
+                error:
+                    error.message
 
             });
 
@@ -842,6 +1003,7 @@ app.get(
 
     }
 );
+
 
 /*
  * =========================
