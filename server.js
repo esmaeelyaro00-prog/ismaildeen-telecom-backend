@@ -1850,7 +1850,490 @@ app.get(
     }
 );
 
+/*
+ * =====================================================
+ * BUY DATA
+ * =====================================================
+ */
 
+app.post(
+    "/api/vtpass/buy-data",
+    async (req, res) => {
+
+        try {
+
+            const {
+                uid,
+                network,
+                phone,
+                variation_code,
+                amount
+            } = req.body;
+
+            // ==============================
+            // VALIDATION
+            // ==============================
+
+            if (
+                !uid ||
+                !network ||
+                !phone ||
+                !variation_code ||
+                !amount
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "uid, network, phone, variation_code and amount are required"
+
+                });
+
+            }
+
+            if (!db) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "Firebase is not initialized"
+
+                });
+
+            }
+
+            if (!process.env.VTPASS_API_KEY) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "VTPASS_API_KEY is not configured"
+
+                });
+
+            }
+
+            if (!process.env.VTPASS_SECRET_KEY) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+
+                });
+
+            }
+
+            // ==============================
+            // NETWORK → SERVICE ID
+            // ==============================
+
+            const serviceMap = {
+
+                mtn:
+                    "mtn-data",
+
+                airtel:
+                    "airtel-data",
+
+                glo:
+                    "glo-data",
+
+                "9mobile":
+                    "etisalat-data",
+
+                etisalat:
+                    "etisalat-data"
+
+            };
+
+            const normalizedNetwork =
+                network.toLowerCase().trim();
+
+            const serviceID =
+                serviceMap[normalizedNetwork];
+
+            if (!serviceID) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Unsupported network"
+
+                });
+
+            }
+
+            // ==============================
+            // AMOUNT
+            // ==============================
+
+            const amountNumber =
+                Number(amount);
+
+            if (
+                !Number.isFinite(amountNumber) ||
+                amountNumber <= 0
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid amount"
+
+                });
+
+            }
+
+            // ==============================
+            // PHONE VALIDATION
+            // ==============================
+
+            const cleanPhone =
+                String(phone).replace(/\D/g, "");
+
+            if (cleanPhone.length !== 11) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Phone number must be 11 digits"
+
+                });
+
+            }
+
+            // ==============================
+            // USER
+            // ==============================
+
+            const userRef =
+                db.collection("users").doc(uid);
+
+            const userSnapshot =
+                await userRef.get();
+
+            if (!userSnapshot.exists) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "User not found"
+
+                });
+
+            }
+
+            const userData =
+                userSnapshot.data();
+
+            const currentBalance =
+                Number(
+                    userData.walletBalance || 0
+                );
+
+            // ==============================
+            // CHECK WALLET
+            // ==============================
+
+            if (currentBalance < amountNumber) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Insufficient wallet balance",
+
+                    walletBalance:
+                        currentBalance,
+
+                    required:
+                        amountNumber
+
+                });
+
+            }
+
+            // ==============================
+            // REQUEST ID
+            // ==============================
+
+            const requestId =
+                "IDD" +
+                Date.now() +
+                Math.floor(
+                    Math.random() * 1000
+                );
+
+            // ==============================
+            // VTpass PURCHASE
+            // ==============================
+
+            const vtpassResponse =
+                await axios.post(
+
+                    "https://sandbox.vtpass.com/api/pay",
+
+                    {
+
+                        request_id:
+                            requestId,
+
+                        serviceID:
+                            serviceID,
+
+                        billersCode:
+                            cleanPhone,
+
+                        variation_code:
+                            variation_code,
+
+                        amount:
+                            amountNumber,
+
+                        phone:
+                            cleanPhone
+
+                    },
+
+                    {
+
+                        headers: {
+
+                            "api-key":
+                                process.env.VTPASS_API_KEY,
+
+                            "secret-key":
+                                process.env.VTPASS_SECRET_KEY,
+
+                            "Content-Type":
+                                "application/json"
+
+                        }
+
+                    }
+
+                );
+
+            const vtpassData =
+                vtpassResponse.data;
+
+            console.log(
+                "VTpass purchase:",
+                vtpassData
+            );
+
+            // ==============================
+            // CHECK VTpass RESPONSE
+            // ==============================
+
+            const responseCode =
+                String(
+                    vtpassData.code || ""
+                );
+
+            const successful =
+                responseCode === "000";
+
+            if (!successful) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        vtpassData.response_description ||
+                        "Data purchase failed",
+
+                    vtpass:
+                        vtpassData
+
+                });
+
+            }
+
+            // ==============================
+            // DEDUCT WALLET + SAVE TRANSACTION
+            // ==============================
+
+            const transactionRef =
+                db
+                    .collection("transactions")
+                    .doc();
+
+            await db.runTransaction(
+
+                async (transaction) => {
+
+                    const freshUser =
+                        await transaction.get(
+                            userRef
+                        );
+
+                    const freshData =
+                        freshUser.data() || {};
+
+                    const freshBalance =
+                        Number(
+                            freshData.walletBalance || 0
+                        );
+
+                    if (
+                        freshBalance <
+                        amountNumber
+                    ) {
+
+                        throw new Error(
+                            "Insufficient wallet balance"
+                        );
+
+                    }
+
+                    const newBalance =
+                        freshBalance -
+                        amountNumber;
+
+                    transaction.update(
+
+                        userRef,
+
+                        {
+
+                            walletBalance:
+                                newBalance,
+
+                            updatedAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+                    transaction.set(
+
+                        transactionRef,
+
+                        {
+
+                            userId:
+                                uid,
+
+                            type:
+                                "data_purchase",
+
+                            network:
+                                normalizedNetwork,
+
+                            phone:
+                                cleanPhone,
+
+                            variationCode:
+                                variation_code,
+
+                            amount:
+                                amountNumber,
+
+                            serviceID:
+                                serviceID,
+
+                            requestId:
+                                requestId,
+
+                            vtpassCode:
+                                responseCode,
+
+                            status:
+                                "successful",
+
+                            createdAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+                }
+
+            );
+
+            // ==============================
+            // SUCCESS
+            // ==============================
+
+            res.json({
+
+                success: true,
+
+                message:
+                    "Data purchase successful",
+
+                transactionId:
+                    transactionRef.id,
+
+                network:
+                    normalizedNetwork,
+
+                phone:
+                    cleanPhone,
+
+                amount:
+                    amountNumber,
+
+                walletBalance:
+                    currentBalance -
+                    amountNumber,
+
+                vtpass:
+                    vtpassData
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Buy data error:",
+                error.response?.data ||
+                error.message
+            );
+
+            res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to complete data purchase",
+
+                error:
+                    error.response?.data ||
+                    error.message
+
+            });
+
+        }
+
+    }
+);
 /*
  * =====================================================
  * START SERVER
