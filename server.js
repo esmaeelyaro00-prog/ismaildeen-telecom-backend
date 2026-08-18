@@ -11,9 +11,9 @@ app.use(cors());
 app.use(express.json());
 
 /*
- * =========================
+ * =====================================================
  * FIREBASE ADMIN
- * =========================
+ * =====================================================
  */
 
 let db = null;
@@ -25,7 +25,8 @@ try {
     );
 
     admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
+        credential:
+            admin.credential.cert(serviceAccount)
     });
 
     db = admin.firestore();
@@ -40,235 +41,512 @@ try {
         "Firebase Admin initialization failed:",
         error.message
     );
+
 }
 
 
 /*
- * =========================
+ * =====================================================
  * HOME
- * =========================
+ * =====================================================
  */
 
 app.get("/", (req, res) => {
 
     res.json({
+
         success: true,
-        message: "ISMAIL DEEN DATA Backend is running"
+
+        message:
+            "ISMAIL DEEN DATA Backend is running"
+
     });
 
 });
 
 
 /*
- * =========================
+ * =====================================================
  * HEALTH
- * =========================
+ * =====================================================
  */
 
 app.get("/api/health", (req, res) => {
 
     res.json({
+
         success: true,
+
         status: "online"
+
     });
 
 });
 
 
 /*
- * =========================
+ * =====================================================
  * PAYMENT TEST
- * =========================
+ * =====================================================
  */
 
 app.get("/api/payment/test", (req, res) => {
 
     res.json({
+
         success: true,
-        message: "Payment backend is connected"
+
+        message:
+            "Payment backend is connected"
+
     });
 
 });
 
 
 /*
- * =========================
+ * =====================================================
  * FIREBASE TEST
- * =========================
+ * =====================================================
  */
 
-app.get("/api/firebase/test", async (req, res) => {
+app.get(
+    "/api/firebase/test",
+    async (req, res) => {
 
-    try {
+        try {
 
-        if (!db) {
+            if (!db) {
 
-            return res.status(500).json({
-                success: false,
-                message: "Firebase is not initialized"
-            });
+                return res.status(500).json({
 
-        }
+                    success: false,
 
-        await db
-            .collection("system")
-            .doc("connection")
-            .set({
+                    message:
+                        "Firebase is not initialized"
 
-                connected: true,
+                });
 
-                updatedAt:
-                    new Date().toISOString()
+            }
 
-            });
-
-        res.json({
-
-            success: true,
-
-            message:
-                "Firebase connected successfully"
-
-        });
-
-    } catch (error) {
-
-        console.error(
-            "Firebase error:",
-            error.message
-        );
-
-        res.status(500).json({
-
-            success: false,
-
-            message:
-                "Firebase connection failed",
-
-            error:
-                error.message
-
-        });
-
-    }
-
-});
-
-
-/*
- * =========================
- * WALLET TEST
- * =========================
- *
- * Wannan route yana nuna wallet
- * na UID ɗin da aka bayar.
- *
- * Example:
- * /api/wallet/USER_UID
- *
- */
-
-app.get("/api/wallet/:uid", async (req, res) => {
-
-    try {
-
-        if (!db) {
-
-            return res.status(500).json({
-                success: false,
-                message: "Firebase is not initialized"
-            });
-
-        }
-
-        const uid =
-            req.params.uid;
-
-        if (!uid) {
-
-            return res.status(400).json({
-                success: false,
-                message: "UID is required"
-            });
-
-        }
-
-        const userDoc =
             await db
-                .collection("users")
-                .doc(uid)
-                .get();
+                .collection("system")
+                .doc("connection")
+                .set({
 
-        if (!userDoc.exists) {
+                    connected: true,
 
-            return res.status(404).json({
+                    updatedAt:
+                        new Date().toISOString()
+
+                });
+
+            res.json({
+
+                success: true,
+
+                message:
+                    "Firebase connected successfully"
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Firebase error:",
+                error.message
+            );
+
+            res.status(500).json({
 
                 success: false,
 
                 message:
-                    "User not found",
+                    "Firebase connection failed",
 
-                uid:
-                    uid
+                error:
+                    error.message
 
             });
 
         }
 
-        const data =
-            userDoc.data();
-
-        const walletBalance =
-            Number(
-                data.walletBalance || 0
-            );
-
-        res.json({
-
-            success: true,
-
-            uid:
-                uid,
-
-            email:
-                data.email || null,
-
-            phone:
-                data.phone || null,
-
-            walletBalance:
-                walletBalance
-
-        });
-
-    } catch (error) {
-
-        console.error(
-            "Wallet error:",
-            error.message
-        );
-
-        res.status(500).json({
-
-            success: false,
-
-            message:
-                "Unable to read wallet",
-
-            error:
-                error.message
-
-        });
-
     }
-
-});
+);
 
 
 /*
- * =========================
- * INITIALIZE PAYSTACK PAYMENT
- * =========================
+ * =====================================================
+ * WALLET
+ * GET USER WALLET
+ *
+ * Example:
+ * /api/wallet/FIREBASE_UID
+ * =====================================================
+ */
+
+app.get(
+    "/api/wallet/:uid",
+    async (req, res) => {
+
+        try {
+
+            if (!db) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "Firebase is not initialized"
+
+                });
+
+            }
+
+            const uid =
+                req.params.uid;
+
+            if (!uid) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "UID is required"
+
+                });
+
+            }
+
+            const userDoc =
+                await db
+                    .collection("users")
+                    .doc(uid)
+                    .get();
+
+            if (!userDoc.exists) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "User not found",
+
+                    uid:
+                        uid
+
+                });
+
+            }
+
+            const data =
+                userDoc.data();
+
+            const walletBalance =
+                Number(
+                    data.walletBalance || 0
+                );
+
+            res.json({
+
+                success: true,
+
+                uid:
+                    uid,
+
+                email:
+                    data.email || null,
+
+                phone:
+                    data.phone || null,
+
+                walletBalance:
+                    walletBalance
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Wallet error:",
+                error.message
+            );
+
+            res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to read wallet",
+
+                error:
+                    error.message
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+ * =====================================================
+ * VTpass DATA PLANS
+ *
+ * Example:
+ *
+ * /api/vtpass/data-plans/mtn
+ * /api/vtpass/data-plans/airtel
+ * /api/vtpass/data-plans/glo
+ * /api/vtpass/data-plans/9mobile
+ * =====================================================
+ */
+
+app.get(
+    "/api/vtpass/data-plans/:network",
+    async (req, res) => {
+
+        try {
+
+            const network =
+                req.params.network
+                    .toLowerCase()
+                    .trim();
+
+
+            /*
+             * Network → VTpass Service ID
+             */
+
+            const serviceMap = {
+
+                mtn:
+                    "mtn-data",
+
+                airtel:
+                    "airtel-data",
+
+                glo:
+                    "glo-data",
+
+                "9mobile":
+                    "etisalat-data",
+
+                etisalat:
+                    "etisalat-data"
+
+            };
+
+
+            const serviceID =
+                serviceMap[network];
+
+
+            /*
+             * Check network
+             */
+
+            if (!serviceID) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Unsupported network",
+
+                    network:
+                        network
+
+                });
+
+            }
+
+
+            /*
+             * Check VTpass API Key
+             */
+
+            if (
+                !process.env.VTPASS_API_KEY
+            ) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "VTPASS_API_KEY is not configured"
+
+                });
+
+            }
+
+
+            /*
+             * Check VTpass Secret Key
+             */
+
+            if (
+                !process.env.VTPASS_SECRET_KEY
+            ) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+
+                });
+
+            }
+
+
+            /*
+             * Request plans from VTpass
+             */
+
+            const response =
+                await axios.get(
+
+                    "https://sandbox.vtpass.com/api/service-variations",
+
+                    {
+
+                        params: {
+
+                            serviceID:
+                                serviceID
+
+                        },
+
+                        headers: {
+
+                            "api-key":
+                                process.env.VTPASS_API_KEY,
+
+                            "secret-key":
+                                process.env.VTPASS_SECRET_KEY,
+
+                            "Content-Type":
+                                "application/json"
+
+                        }
+
+                    }
+
+                );
+
+
+            /*
+             * VTpass response
+             */
+
+            const content =
+                response.data.content || {};
+
+
+            /*
+             * Some VTpass responses use
+             * variations.
+             */
+
+            const variations =
+                content.variations ||
+                content.varations ||
+                [];
+
+
+            /*
+             * Format plans
+             */
+
+            const plans =
+                variations.map(
+                    (plan) => {
+
+                        return {
+
+                            variation_code:
+                                plan.variation_code,
+
+                            name:
+                                plan.name,
+
+                            amount:
+                                Number(
+                                    plan.variation_amount
+                                ),
+
+                            variation_amount:
+                                plan.variation_amount,
+
+                            fixedPrice:
+                                plan.fixedPrice
+
+                        };
+
+                    }
+                );
+
+
+            /*
+             * Send response
+             */
+
+            res.json({
+
+                success: true,
+
+                network:
+                    network,
+
+                serviceID:
+                    serviceID,
+
+                plans:
+                    plans
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "VTpass data plans error:",
+
+                error.response?.data ||
+                error.message
+            );
+
+
+            res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to load VTpass data plans",
+
+                error:
+                    error.response?.data ||
+                    error.message
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+ * =====================================================
+ * PAYSTACK INITIALIZE PAYMENT
+ * =====================================================
  */
 
 app.post(
@@ -285,7 +563,7 @@ app.post(
 
 
             /*
-             * Check required fields
+             * Required fields
              */
 
             if (
@@ -307,7 +585,7 @@ app.post(
 
 
             /*
-             * Check Firebase
+             * Firebase
              */
 
             if (!db) {
@@ -325,7 +603,7 @@ app.post(
 
 
             /*
-             * Check Paystack Secret Key
+             * Paystack key
              */
 
             if (
@@ -345,11 +623,12 @@ app.post(
 
 
             /*
-             * Validate amount
+             * Amount
              */
 
             const amountNumber =
                 Number(amount);
+
 
             if (
                 !Number.isFinite(
@@ -371,7 +650,7 @@ app.post(
 
 
             /*
-             * Convert Naira to Kobo
+             * Naira → Kobo
              */
 
             const amountInKobo =
@@ -381,7 +660,7 @@ app.post(
 
 
             /*
-             * Create transaction document
+             * Create transaction
              */
 
             const transactionRef =
@@ -391,12 +670,13 @@ app.post(
                     )
                     .doc();
 
+
             const transactionId =
                 transactionRef.id;
 
 
             /*
-             * Initialize Paystack
+             * Paystack
              */
 
             const response =
@@ -449,7 +729,7 @@ app.post(
 
 
             /*
-             * Save pending transaction
+             * Save transaction
              */
 
             await transactionRef.set({
@@ -484,14 +764,12 @@ app.post(
 
 
             /*
-             * Send payment data
-             * back to Android
+             * Response
              */
 
             res.json({
 
-                success:
-                    true,
+                success: true,
 
                 data: {
 
@@ -522,10 +800,10 @@ app.post(
 
             );
 
+
             res.status(500).json({
 
-                success:
-                    false,
+                success: false,
 
                 message:
                     "Unable to initialize payment"
@@ -539,9 +817,9 @@ app.post(
 
 
 /*
- * =========================
- * VERIFY PAYSTACK PAYMENT
- * =========================
+ * =====================================================
+ * PAYSTACK VERIFY PAYMENT
+ * =====================================================
  */
 
 app.get(
@@ -550,21 +828,19 @@ app.get(
 
         try {
 
-            const {
-                reference
-            } = req.params;
+            const reference =
+                req.params.reference;
 
 
             /*
-             * Check reference
+             * Reference
              */
 
             if (!reference) {
 
                 return res.status(400).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         "Transaction reference is required"
@@ -575,15 +851,14 @@ app.get(
 
 
             /*
-             * Check Firebase
+             * Firebase
              */
 
             if (!db) {
 
                 return res.status(500).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         "Firebase is not initialized"
@@ -594,7 +869,7 @@ app.get(
 
 
             /*
-             * Check Paystack key
+             * Paystack key
              */
 
             if (
@@ -603,8 +878,7 @@ app.get(
 
                 return res.status(500).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         "PAYSTACK_SECRET_KEY is not configured"
@@ -633,7 +907,7 @@ app.get(
 
 
             /*
-             * Transaction not found
+             * Not found
              */
 
             if (
@@ -642,8 +916,7 @@ app.get(
 
                 return res.status(404).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         "Transaction not found"
@@ -656,12 +929,13 @@ app.get(
             const transactionDoc =
                 snapshot.docs[0];
 
+
             const transaction =
                 transactionDoc.data();
 
 
             /*
-             * Prevent duplicate credit
+             * Already completed
              */
 
             if (
@@ -671,8 +945,7 @@ app.get(
 
                 return res.json({
 
-                    success:
-                        true,
+                    success: true,
 
                     message:
                         "Payment already processed",
@@ -689,7 +962,7 @@ app.get(
 
 
             /*
-             * Verify with Paystack
+             * Verify Paystack
              */
 
             const response =
@@ -716,7 +989,7 @@ app.get(
 
 
             /*
-             * Check payment status
+             * Payment failed
              */
 
             if (
@@ -737,10 +1010,10 @@ app.get(
 
                 });
 
+
                 return res.json({
 
-                    success:
-                        false,
+                    success: false,
 
                     status:
                         payment.status,
@@ -754,7 +1027,7 @@ app.get(
 
 
             /*
-             * Check payment amount
+             * Amount check
              */
 
             if (
@@ -764,8 +1037,7 @@ app.get(
 
                 return res.status(400).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         "Payment amount does not match"
@@ -776,25 +1048,20 @@ app.get(
 
 
             /*
-             * =========================
+             * =================================================
              * CREDIT WALLET
-             * =========================
-             *
-             * IMPORTANT:
-             *
-             * Firestore field:
-             * walletBalance
-             *
+             * =================================================
              */
 
             await db.runTransaction(
+
                 async (
                     firestoreTransaction
                 ) => {
 
 
                     /*
-                     * User reference
+                     * User
                      */
 
                     const userRef =
@@ -808,7 +1075,7 @@ app.get(
 
 
                     /*
-                     * Wallet transaction reference
+                     * Transaction
                      */
 
                     const walletTransactionRef =
@@ -840,8 +1107,7 @@ app.get(
 
 
                     /*
-                     * Double-check
-                     * to prevent duplicate credit
+                     * Prevent double credit
                      */
 
                     if (
@@ -856,23 +1122,21 @@ app.get(
 
 
                     /*
-                     * Get current wallet
-                     *
-                     * IMPORTANT:
-                     * walletBalance
+                     * Current wallet
                      */
 
                     const currentBalance =
                         userSnapshot.exists
                             ? Number(
-                                userSnapshot.data()
+                                userSnapshot
+                                    .data()
                                     .walletBalance || 0
                             )
                             : 0;
 
 
                     /*
-                     * Add payment amount
+                     * New balance
                      */
 
                     const newBalance =
@@ -883,7 +1147,7 @@ app.get(
 
 
                     /*
-                     * Update user wallet
+                     * Update wallet
                      */
 
                     firestoreTransaction.set(
@@ -913,7 +1177,7 @@ app.get(
 
 
                     /*
-                     * Mark transaction completed
+                     * Complete transaction
                      */
 
                     firestoreTransaction.update(
@@ -942,17 +1206,17 @@ app.get(
                     );
 
                 }
+
             );
 
 
             /*
-             * Successful response
+             * Success
              */
 
             res.json({
 
-                success:
-                    true,
+                success: true,
 
                 message:
                     "Payment verified and wallet funded successfully",
@@ -986,10 +1250,10 @@ app.get(
 
             );
 
+
             res.status(500).json({
 
-                success:
-                    false,
+                success: false,
 
                 message:
                     "Unable to verify payment",
@@ -1006,13 +1270,14 @@ app.get(
 
 
 /*
- * =========================
+ * =====================================================
  * START SERVER
- * =========================
+ * =====================================================
  */
 
 const PORT =
     process.env.PORT || 3000;
+
 
 app.listen(
     PORT,
