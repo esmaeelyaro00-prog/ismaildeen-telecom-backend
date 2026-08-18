@@ -179,9 +179,6 @@ app.get(
  * =====================================================
  * WALLET
  * GET USER WALLET
- *
- * Example:
- * /api/wallet/FIREBASE_UID
  * =====================================================
  */
 
@@ -296,8 +293,6 @@ app.get(
 /*
  * =====================================================
  * VTpass DATA PLANS
- *
- * Example:
  *
  * /api/vtpass/data-plans/mtn
  * /api/vtpass/data-plans/airtel
@@ -530,6 +525,594 @@ app.get(
 
                 message:
                     "Unable to load VTpass data plans",
+
+                error:
+                    error.response?.data ||
+                    error.message
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+ * =====================================================
+ * VTpass BUY DATA
+ * =====================================================
+ */
+
+app.post(
+    "/api/vtpass/buy-data",
+    async (req, res) => {
+
+        try {
+
+            /*
+             * Get request data
+             */
+
+            const {
+                uid,
+                network,
+                phone,
+                variation_code,
+                amount
+            } = req.body;
+
+
+            /*
+             * Required fields
+             */
+
+            if (
+                !uid ||
+                !network ||
+                !phone ||
+                !variation_code ||
+                amount === undefined
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "uid, network, phone, variation_code and amount are required"
+
+                });
+
+            }
+
+
+            /*
+             * Firebase check
+             */
+
+            if (!db) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "Firebase is not initialized"
+
+                });
+
+            }
+
+
+            /*
+             * VTpass API key
+             */
+
+            if (
+                !process.env.VTPASS_API_KEY
+            ) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "VTPASS_API_KEY is not configured"
+
+                });
+
+            }
+
+
+            /*
+             * VTpass Secret Key
+             */
+
+            if (
+                !process.env.VTPASS_SECRET_KEY
+            ) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+
+                });
+
+            }
+
+
+            /*
+             * Network → Service ID
+             */
+
+            const serviceMap = {
+
+                mtn:
+                    "mtn-data",
+
+                airtel:
+                    "airtel-data",
+
+                glo:
+                    "glo-data",
+
+                "9mobile":
+                    "etisalat-data",
+
+                etisalat:
+                    "etisalat-data"
+
+            };
+
+
+            const networkName =
+                network
+                    .toLowerCase()
+                    .trim();
+
+
+            const serviceID =
+                serviceMap[networkName];
+
+
+            /*
+             * Check network
+             */
+
+            if (!serviceID) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Unsupported network"
+
+                });
+
+            }
+
+
+            /*
+             * Validate phone
+             */
+
+            if (
+                !/^[0-9]{11}$/.test(phone)
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid phone number"
+
+                });
+
+            }
+
+
+            /*
+             * Validate amount
+             */
+
+            const purchaseAmount =
+                Number(amount);
+
+
+            if (
+                !Number.isFinite(
+                    purchaseAmount
+                ) ||
+                purchaseAmount <= 0
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid amount"
+
+                });
+
+            }
+
+
+            /*
+             * Get user
+             */
+
+            const userRef =
+                db
+                    .collection("users")
+                    .doc(uid);
+
+
+            const userSnapshot =
+                await userRef.get();
+
+
+            if (!userSnapshot.exists) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "User not found"
+
+                });
+
+            }
+
+
+            /*
+             * Current wallet
+             */
+
+            const userData =
+                userSnapshot.data();
+
+
+            const walletBalance =
+                Number(
+                    userData.walletBalance || 0
+                );
+
+
+            /*
+             * Check wallet balance
+             */
+
+            if (
+                walletBalance <
+                purchaseAmount
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Insufficient wallet balance",
+
+                    walletBalance:
+                        walletBalance,
+
+                    required:
+                        purchaseAmount
+
+                });
+
+            }
+
+
+            /*
+             * Generate unique request ID
+             */
+
+            const requestId =
+                "IDD-" +
+                Date.now() +
+                "-" +
+                Math.floor(
+                    Math.random() * 100000
+                );
+
+
+            /*
+             * Call VTpass
+             */
+
+            const response =
+                await axios.post(
+
+                    "https://sandbox.vtpass.com/api/pay",
+
+                    {
+
+                        request_id:
+                            requestId,
+
+                        serviceID:
+                            serviceID,
+
+                        billersCode:
+                            phone,
+
+                        variation_code:
+                            variation_code,
+
+                        amount:
+                            purchaseAmount,
+
+                        phone:
+                            phone
+
+                    },
+
+                    {
+
+                        headers: {
+
+                            "api-key":
+                                process.env.VTPASS_API_KEY,
+
+                            "secret-key":
+                                process.env.VTPASS_SECRET_KEY,
+
+                            "Content-Type":
+                                "application/json"
+
+                        }
+
+                    }
+
+                );
+
+
+            /*
+             * VTpass response
+             */
+
+            const result =
+                response.data;
+
+
+            console.log(
+                "VTpass BUY DATA response:",
+                result
+            );
+
+
+            /*
+             * Check VTpass result
+             */
+
+            if (
+                result.code !== "000"
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        result.response_description ||
+                        "Data purchase failed",
+
+                    code:
+                        result.code || null,
+
+                    vtpass:
+                        result
+
+                });
+
+            }
+
+
+            /*
+             * =================================================
+             * DEDUCT WALLET + SAVE TRANSACTION
+             * =================================================
+             */
+
+            const transactionRef =
+                db
+                    .collection(
+                        "walletTransactions"
+                    )
+                    .doc();
+
+
+            await db.runTransaction(
+
+                async (
+                    firestoreTransaction
+                ) => {
+
+                    /*
+                     * Get fresh user balance
+                     */
+
+                    const freshUser =
+                        await firestoreTransaction.get(
+                            userRef
+                        );
+
+
+                    if (
+                        !freshUser.exists
+                    ) {
+
+                        throw new Error(
+                            "User not found"
+                        );
+
+                    }
+
+
+                    const freshBalance =
+                        Number(
+                            freshUser
+                                .data()
+                                .walletBalance || 0
+                        );
+
+
+                    /*
+                     * Check balance again
+                     */
+
+                    if (
+                        freshBalance <
+                        purchaseAmount
+                    ) {
+
+                        throw new Error(
+                            "Insufficient wallet balance"
+                        );
+
+                    }
+
+
+                    /*
+                     * New balance
+                     */
+
+                    const newBalance =
+                        freshBalance -
+                        purchaseAmount;
+
+
+                    /*
+                     * Update wallet
+                     */
+
+                    firestoreTransaction.update(
+
+                        userRef,
+
+                        {
+
+                            walletBalance:
+                                newBalance,
+
+                            updatedAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+
+                    /*
+                     * Save transaction
+                     */
+
+                    firestoreTransaction.set(
+
+                        transactionRef,
+
+                        {
+
+                            userId:
+                                uid,
+
+                            type:
+                                "data_purchase",
+
+                            network:
+                                networkName,
+
+                            phone:
+                                phone,
+
+                            variationCode:
+                                variation_code,
+
+                            amount:
+                                purchaseAmount,
+
+                            requestId:
+                                requestId,
+
+                            vtpassCode:
+                                result.code,
+
+                            status:
+                                "completed",
+
+                            createdAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+                }
+
+            );
+
+
+            /*
+             * Success response
+             */
+
+            return res.json({
+
+                success: true,
+
+                message:
+                    "Data purchase successful",
+
+                transactionId:
+                    transactionRef.id,
+
+                requestId:
+                    requestId,
+
+                network:
+                    networkName,
+
+                phone:
+                    phone,
+
+                amount:
+                    purchaseAmount
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+
+                "BUY DATA ERROR:",
+
+                error.response?.data ||
+                error.message
+
+            );
+
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to complete data purchase",
 
                 error:
                     error.response?.data ||
@@ -1058,7 +1641,6 @@ app.get(
                 async (
                     firestoreTransaction
                 ) => {
-
 
                     /*
                      * User
