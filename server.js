@@ -7,14 +7,35 @@ const admin = require("firebase-admin");
 
 const app = express();
 
+/*
+=====================================================
+BASIC CONFIG
+=====================================================
+*/
+
 app.use(cors());
 app.use(express.json());
 
 /*
- * =====================================================
- * FIREBASE ADMIN
- * =====================================================
- */
+=====================================================
+ENVIRONMENT
+=====================================================
+*/
+
+const PORT = process.env.PORT || 3000;
+
+const VTPASS_BASE_URL =
+    process.env.VTPASS_BASE_URL ||
+    "https://sandbox.vtpass.com/api";
+
+const PAYSTACK_BASE_URL =
+    "https://api.paystack.co";
+
+/*
+=====================================================
+FIREBASE ADMIN
+=====================================================
+*/
 
 let db = null;
 
@@ -24,10 +45,16 @@ try {
         "/etc/secrets/firebase-service-account.json"
     );
 
-    admin.initializeApp({
-        credential:
-            admin.credential.cert(serviceAccount)
-    });
+    if (!admin.apps.length) {
+
+        admin.initializeApp({
+
+            credential:
+                admin.credential.cert(serviceAccount)
+
+        });
+
+    }
 
     db = admin.firestore();
 
@@ -44,12 +71,81 @@ try {
 
 }
 
+/*
+=====================================================
+HELPERS
+=====================================================
+*/
+
+function getServiceId(network) {
+
+    const serviceMap = {
+
+        mtn: "mtn-data",
+
+        airtel: "airtel-data",
+
+        glo: "glo-data",
+
+        "9mobile": "etisalat-data",
+
+        etisalat: "etisalat-data"
+
+    };
+
+    if (!network) {
+        return null;
+    }
+
+    const normalized =
+        String(network)
+            .toLowerCase()
+            .trim();
+
+    return serviceMap[normalized] || null;
+}
+
+
+function generateRequestId() {
+
+    return (
+        "IDD-" +
+        Date.now() +
+        "-" +
+        Math.floor(
+            Math.random() * 1000000
+        )
+    );
+
+}
+
+
+function isValidPhone(phone) {
+
+    return /^[0-9]{11}$/.test(
+        String(phone)
+    );
+
+}
+
+
+function isValidAmount(amount) {
+
+    const number =
+        Number(amount);
+
+    return (
+        Number.isFinite(number) &&
+        number > 0
+    );
+
+}
 
 /*
- * =====================================================
- * HOME
- * =====================================================
- */
+=====================================================
+HOME
+=====================================================
+*/
 
 app.get("/", (req, res) => {
 
@@ -58,18 +154,20 @@ app.get("/", (req, res) => {
         success: true,
 
         message:
-            "ISMAIL DEEN DATA Backend is running"
+            "ISMAIL DEEN DATA Backend is running",
+
+        status:
+            "online"
 
     });
 
 });
 
-
 /*
- * =====================================================
- * HEALTH
- * =====================================================
- */
+=====================================================
+HEALTH CHECK
+=====================================================
+*/
 
 app.get("/api/health", (req, res) => {
 
@@ -77,38 +175,45 @@ app.get("/api/health", (req, res) => {
 
         success: true,
 
-        status: "online"
+        status: "online",
+
+        firebase:
+            db ? "connected" : "not_connected",
+
+        time:
+            new Date().toISOString()
 
     });
 
 });
 
+/*
+=====================================================
+PAYMENT TEST
+=====================================================
+*/
+
+app.get(
+    "/api/payment/test",
+    (req, res) => {
+
+        res.json({
+
+            success: true,
+
+            message:
+                "Payment backend is connected"
+
+        });
+
+    }
+);
 
 /*
- * =====================================================
- * PAYMENT TEST
- * =====================================================
- */
-
-app.get("/api/payment/test", (req, res) => {
-
-    res.json({
-
-        success: true,
-
-        message:
-            "Payment backend is connected"
-
-    });
-
-});
-
-
-/*
- * =====================================================
- * FIREBASE TEST
- * =====================================================
- */
+=====================================================
+FIREBASE TEST
+=====================================================
+*/
 
 app.get(
     "/api/firebase/test",
@@ -137,11 +242,13 @@ app.get(
                     connected: true,
 
                     updatedAt:
-                        new Date().toISOString()
+                        admin.firestore
+                            .FieldValue
+                            .serverTimestamp()
 
                 });
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -153,19 +260,16 @@ app.get(
         } catch (error) {
 
             console.error(
-                "Firebase error:",
+                "Firebase test error:",
                 error.message
             );
 
-            res.status(500).json({
+            return res.status(500).json({
 
                 success: false,
 
                 message:
-                    "Firebase connection failed",
-
-                error:
-                    error.message
+                    "Firebase connection failed"
 
             });
 
@@ -174,13 +278,11 @@ app.get(
     }
 );
 
-
 /*
- * =====================================================
- * WALLET
- * GET USER WALLET
- * =====================================================
- */
+=====================================================
+GET USER WALLET
+=====================================================
+*/
 
 app.get(
     "/api/wallet/:uid",
@@ -202,7 +304,7 @@ app.get(
             }
 
             const uid =
-                req.params.uid;
+                String(req.params.uid || "").trim();
 
             if (!uid) {
 
@@ -230,29 +332,25 @@ app.get(
                     success: false,
 
                     message:
-                        "User not found",
-
-                    uid:
-                        uid
+                        "User not found"
 
                 });
 
             }
 
             const data =
-                userDoc.data();
+                userDoc.data() || {};
 
             const walletBalance =
                 Number(
                     data.walletBalance || 0
                 );
 
-            res.json({
+            return res.json({
 
                 success: true,
 
-                uid:
-                    uid,
+                uid: uid,
 
                 email:
                     data.email || null,
@@ -272,15 +370,12 @@ app.get(
                 error.message
             );
 
-            res.status(500).json({
+            return res.status(500).json({
 
                 success: false,
 
                 message:
-                    "Unable to read wallet",
-
-                error:
-                    error.message
+                    "Unable to read wallet"
 
             });
 
@@ -289,17 +384,20 @@ app.get(
     }
 );
 
-
 /*
- * =====================================================
- * VTpass DATA PLANS
- *
- * /api/vtpass/data-plans/mtn
- * /api/vtpass/data-plans/airtel
- * /api/vtpass/data-plans/glo
- * /api/vtpass/data-plans/9mobile
- * =====================================================
- */
+=====================================================
+VTpass DATA PLANS
+=====================================================
+
+GET:
+ /api/vtpass/data-plans/mtn
+ /api/vtpass/data-plans/airtel
+ /api/vtpass/data-plans/glo
+ /api/vtpass/data-plans/9mobile
+
+VTpass variation-code endpoint uses serviceID.
+=====================================================
+*/
 
 app.get(
     "/api/vtpass/data-plans/:network",
@@ -308,42 +406,14 @@ app.get(
         try {
 
             const network =
-                req.params.network
-                    .toLowerCase()
-                    .trim();
-
-
-            /*
-             * Network → VTpass Service ID
-             */
-
-            const serviceMap = {
-
-                mtn:
-                    "mtn-data",
-
-                airtel:
-                    "airtel-data",
-
-                glo:
-                    "glo-data",
-
-                "9mobile":
-                    "etisalat-data",
-
-                etisalat:
-                    "etisalat-data"
-
-            };
-
+                String(
+                    req.params.network || ""
+                )
+                .toLowerCase()
+                .trim();
 
             const serviceID =
-                serviceMap[network];
-
-
-            /*
-             * Check network
-             */
+                getServiceId(network);
 
             if (!serviceID) {
 
@@ -361,11 +431,6 @@ app.get(
 
             }
 
-
-            /*
-             * Check VTpass API Key
-             */
-
             if (
                 !process.env.VTPASS_API_KEY
             ) {
@@ -381,13 +446,8 @@ app.get(
 
             }
 
-
-            /*
-             * Check VTpass Secret Key
-             */
-
             if (
-                !process.env.VTPASS_SECRET_KEY
+                !process.env.VTPASS_PUBLIC_KEY
             ) {
 
                 return res.status(500).json({
@@ -395,21 +455,16 @@ app.get(
                     success: false,
 
                     message:
-                        "VTPASS_SECRET_KEY is not configured"
+                        "VTPASS_PUBLIC_KEY is not configured"
 
                 });
 
             }
 
-
-            /*
-             * Request plans from VTpass
-             */
-
             const response =
                 await axios.get(
 
-                    "https://sandbox.vtpass.com/api/service-variations",
+                    `${VTPASS_BASE_URL}/service-variations`,
 
                     {
 
@@ -425,76 +480,56 @@ app.get(
                             "api-key":
                                 process.env.VTPASS_API_KEY,
 
-                            "secret-key":
-                                process.env.VTPASS_SECRET_KEY,
+                            "public-key":
+                                process.env.VTPASS_PUBLIC_KEY,
 
                             "Content-Type":
                                 "application/json"
 
-                        }
+                        },
+
+                        timeout: 30000
 
                     }
 
                 );
 
-
-            /*
-             * VTpass response
-             */
+            const data =
+                response.data || {};
 
             const content =
-                response.data.content || {};
-
-
-            /*
-             * Some VTpass responses use
-             * variations.
-             */
+                data.content || {};
 
             const variations =
                 content.variations ||
                 content.varations ||
                 [];
 
-
-            /*
-             * Format plans
-             */
-
             const plans =
                 variations.map(
-                    (plan) => {
+                    (plan) => ({
 
-                        return {
+                        variation_code:
+                            plan.variation_code,
 
-                            variation_code:
-                                plan.variation_code,
+                        name:
+                            plan.name,
 
-                            name:
-                                plan.name,
+                        amount:
+                            Number(
+                                plan.variation_amount
+                            ),
 
-                            amount:
-                                Number(
-                                    plan.variation_amount
-                                ),
+                        variation_amount:
+                            plan.variation_amount,
 
-                            variation_amount:
-                                plan.variation_amount,
+                        fixedPrice:
+                            plan.fixedPrice
 
-                            fixedPrice:
-                                plan.fixedPrice
-
-                        };
-
-                    }
+                    })
                 );
 
-
-            /*
-             * Send response
-             */
-
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -512,14 +547,12 @@ app.get(
         } catch (error) {
 
             console.error(
-                "VTpass data plans error:",
-
+                "VTpass plans error:",
                 error.response?.data ||
                 error.message
             );
 
-
-            res.status(500).json({
+            return res.status(500).json({
 
                 success: false,
 
@@ -537,12 +570,15 @@ app.get(
     }
 );
 
-
 /*
- * =====================================================
- * VTpass BUY DATA
- * =====================================================
- */
+=====================================================
+BUY DATA
+=====================================================
+
+IMPORTANT:
+There is ONLY ONE buy-data route.
+=====================================================
+*/
 
 app.post(
     "/api/vtpass/buy-data",
@@ -550,29 +586,33 @@ app.post(
 
         try {
 
-            /*
-             * Get request data
-             */
-
             const {
+
                 uid,
+
                 network,
+
                 phone,
+
                 variation_code,
+
                 amount
+
             } = req.body;
 
-
             /*
-             * Required fields
-             */
+            -----------------------------------------
+            VALIDATION
+            -----------------------------------------
+            */
 
             if (
                 !uid ||
                 !network ||
                 !phone ||
                 !variation_code ||
-                amount === undefined
+                amount === undefined ||
+                amount === null
             ) {
 
                 return res.status(400).json({
@@ -586,11 +626,6 @@ app.post(
 
             }
 
-
-            /*
-             * Firebase check
-             */
-
             if (!db) {
 
                 return res.status(500).json({
@@ -603,11 +638,6 @@ app.post(
                 });
 
             }
-
-
-            /*
-             * VTpass API key
-             */
 
             if (
                 !process.env.VTPASS_API_KEY
@@ -624,11 +654,6 @@ app.post(
 
             }
 
-
-            /*
-             * VTpass Secret Key
-             */
-
             if (
                 !process.env.VTPASS_SECRET_KEY
             ) {
@@ -644,44 +669,21 @@ app.post(
 
             }
 
-
             /*
-             * Network → Service ID
-             */
+            -----------------------------------------
+            NETWORK
+            -----------------------------------------
+            */
 
-            const serviceMap = {
-
-                mtn:
-                    "mtn-data",
-
-                airtel:
-                    "airtel-data",
-
-                glo:
-                    "glo-data",
-
-                "9mobile":
-                    "etisalat-data",
-
-                etisalat:
-                    "etisalat-data"
-
-            };
-
-
-            const networkName =
-                network
+            const normalizedNetwork =
+                String(network)
                     .toLowerCase()
                     .trim();
 
-
             const serviceID =
-                serviceMap[networkName];
-
-
-            /*
-             * Check network
-             */
+                getServiceId(
+                    normalizedNetwork
+                );
 
             if (!serviceID) {
 
@@ -696,40 +698,42 @@ app.post(
 
             }
 
-
             /*
-             * Validate phone
-             */
+            -----------------------------------------
+            PHONE
+            -----------------------------------------
+            */
 
-            if (
-                !/^[0-9]{11}$/.test(phone)
-            ) {
+            const cleanPhone =
+                String(phone)
+                    .replace(/\D/g, "");
+
+            if (!isValidPhone(cleanPhone)) {
 
                 return res.status(400).json({
 
                     success: false,
 
                     message:
-                        "Invalid phone number"
+                        "Phone number must be 11 digits"
 
                 });
 
             }
 
-
             /*
-             * Validate amount
-             */
+            -----------------------------------------
+            AMOUNT
+            -----------------------------------------
+            */
 
             const purchaseAmount =
                 Number(amount);
 
-
             if (
-                !Number.isFinite(
+                !isValidAmount(
                     purchaseAmount
-                ) ||
-                purchaseAmount <= 0
+                )
             ) {
 
                 return res.status(400).json({
@@ -743,20 +747,21 @@ app.post(
 
             }
 
-
             /*
-             * Get user
-             */
+            -----------------------------------------
+            USER
+            -----------------------------------------
+            */
 
             const userRef =
                 db
                     .collection("users")
-                    .doc(uid);
-
+                    .doc(
+                        String(uid)
+                    );
 
             const userSnapshot =
                 await userRef.get();
-
 
             if (!userSnapshot.exists) {
 
@@ -771,24 +776,19 @@ app.post(
 
             }
 
-
-            /*
-             * Current wallet
-             */
-
             const userData =
-                userSnapshot.data();
-
+                userSnapshot.data() || {};
 
             const walletBalance =
                 Number(
                     userData.walletBalance || 0
                 );
 
-
             /*
-             * Check wallet balance
-             */
+            -----------------------------------------
+            CHECK BALANCE
+            -----------------------------------------
+            */
 
             if (
                 walletBalance <
@@ -812,1284 +812,25 @@ app.post(
 
             }
 
-
             /*
-             * Generate unique request ID
-             */
+            -----------------------------------------
+            REQUEST ID
+            -----------------------------------------
+            */
 
             const requestId =
-                "IDD-" +
-                Date.now() +
-                "-" +
-                Math.floor(
-                    Math.random() * 100000
-                );
-
+                generateRequestId();
 
             /*
-             * Call VTpass
-             */
-
-            const response =
-                await axios.post(
-
-                    "https://sandbox.vtpass.com/api/pay",
-
-                    {
-
-                        request_id:
-                            requestId,
-
-                        serviceID:
-                            serviceID,
-
-                        billersCode:
-                            phone,
-
-                        variation_code:
-                            variation_code,
-
-                        amount:
-                            purchaseAmount,
-
-                        phone:
-                            phone
-
-                    },
-
-                    {
-
-                        headers: {
-
-                            "api-key":
-                                process.env.VTPASS_API_KEY,
-
-                            "secret-key":
-                                process.env.VTPASS_SECRET_KEY,
-
-                            "Content-Type":
-                                "application/json"
-
-                        }
-
-                    }
-
-                );
-
-
-            /*
-             * VTpass response
-             */
-
-            const result =
-                response.data;
-
-
-            console.log(
-                "VTpass BUY DATA response:",
-                result
-            );
-
-
-            /*
-             * Check VTpass result
-             */
-
-            if (
-                result.code !== "000"
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        result.response_description ||
-                        "Data purchase failed",
-
-                    code:
-                        result.code || null,
-
-                    vtpass:
-                        result
-
-                });
-
-            }
-
-
-            /*
-             * =================================================
-             * DEDUCT WALLET + SAVE TRANSACTION
-             * =================================================
-             */
-
-            const transactionRef =
-                db
-                    .collection(
-                        "walletTransactions"
-                    )
-                    .doc();
-
-
-            await db.runTransaction(
-
-                async (
-                    firestoreTransaction
-                ) => {
-
-                    /*
-                     * Get fresh user balance
-                     */
-
-                    const freshUser =
-                        await firestoreTransaction.get(
-                            userRef
-                        );
-
-
-                    if (
-                        !freshUser.exists
-                    ) {
-
-                        throw new Error(
-                            "User not found"
-                        );
-
-                    }
-
-
-                    const freshBalance =
-                        Number(
-                            freshUser
-                                .data()
-                                .walletBalance || 0
-                        );
-
-
-                    /*
-                     * Check balance again
-                     */
-
-                    if (
-                        freshBalance <
-                        purchaseAmount
-                    ) {
-
-                        throw new Error(
-                            "Insufficient wallet balance"
-                        );
-
-                    }
-
-
-                    /*
-                     * New balance
-                     */
-
-                    const newBalance =
-                        freshBalance -
-                        purchaseAmount;
-
-
-                    /*
-                     * Update wallet
-                     */
-
-                    firestoreTransaction.update(
-
-                        userRef,
-
-                        {
-
-                            walletBalance:
-                                newBalance,
-
-                            updatedAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-
-                        }
-
-                    );
-
-
-                    /*
-                     * Save transaction
-                     */
-
-                    firestoreTransaction.set(
-
-                        transactionRef,
-
-                        {
-
-                            userId:
-                                uid,
-
-                            type:
-                                "data_purchase",
-
-                            network:
-                                networkName,
-
-                            phone:
-                                phone,
-
-                            variationCode:
-                                variation_code,
-
-                            amount:
-                                purchaseAmount,
-
-                            requestId:
-                                requestId,
-
-                            vtpassCode:
-                                result.code,
-
-                            status:
-                                "completed",
-
-                            createdAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-
-                        }
-
-                    );
-
-                }
-
-            );
-
-
-            /*
-             * Success response
-             */
-
-            return res.json({
-
-                success: true,
-
-                message:
-                    "Data purchase successful",
-
-                transactionId:
-                    transactionRef.id,
-
-                requestId:
-                    requestId,
-
-                network:
-                    networkName,
-
-                phone:
-                    phone,
-
-                amount:
-                    purchaseAmount
-
-            });
-
-
-        } catch (error) {
-
-            console.error(
-
-                "BUY DATA ERROR:",
-
-                error.response?.data ||
-                error.message
-
-            );
-
-
-            return res.status(500).json({
-
-                success: false,
-
-                message:
-                    "Unable to complete data purchase",
-
-                error:
-                    error.response?.data ||
-                    error.message
-
-            });
-
-        }
-
-    }
-);
-
-
-/*
- * =====================================================
- * PAYSTACK INITIALIZE PAYMENT
- * =====================================================
- */
-
-app.post(
-    "/api/payment/initialize",
-    async (req, res) => {
-
-        try {
-
-            const {
-                email,
-                amount,
-                uid
-            } = req.body;
-
-
-            /*
-             * Required fields
-             */
-
-            if (
-                !email ||
-                !amount ||
-                !uid
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Email, amount and uid are required"
-
-                });
-
-            }
-
-
-            /*
-             * Firebase
-             */
-
-            if (!db) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "Firebase is not initialized"
-
-                });
-
-            }
-
-
-            /*
-             * Paystack key
-             */
-
-            if (
-                !process.env.PAYSTACK_SECRET_KEY
-            ) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "PAYSTACK_SECRET_KEY is not configured"
-
-                });
-
-            }
-
-
-            /*
-             * Amount
-             */
-
-            const amountNumber =
-                Number(amount);
-
-
-            if (
-                !Number.isFinite(
-                    amountNumber
-                ) ||
-                amountNumber < 100
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Minimum payment is ₦100"
-
-                });
-
-            }
-
-
-            /*
-             * Naira → Kobo
-             */
-
-            const amountInKobo =
-                Math.round(
-                    amountNumber * 100
-                );
-
-
-            /*
-             * Create transaction
-             */
-
-            const transactionRef =
-                db
-                    .collection(
-                        "walletTransactions"
-                    )
-                    .doc();
-
-
-            const transactionId =
-                transactionRef.id;
-
-
-            /*
-             * Paystack
-             */
-
-            const response =
-                await axios.post(
-
-                    "https://api.paystack.co/transaction/initialize",
-
-                    {
-
-                        email:
-                            email,
-
-                        amount:
-                            amountInKobo,
-
-                        currency:
-                            "NGN",
-
-                        metadata: {
-
-                            userId:
-                                uid,
-
-                            transactionId:
-                                transactionId
-
-                        }
-
-                    },
-
-                    {
-
-                        headers: {
-
-                            Authorization:
-                                `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-
-                            "Content-Type":
-                                "application/json"
-
-                        }
-
-                    }
-
-                );
-
-
-            const paymentData =
-                response.data.data;
-
-
-            /*
-             * Save transaction
-             */
-
-            await transactionRef.set({
-
-                userId:
-                    uid,
-
-                email:
-                    email,
-
-                amount:
-                    amountNumber,
-
-                amountKobo:
-                    amountInKobo,
-
-                type:
-                    "wallet_funding",
-
-                status:
-                    "pending",
-
-                reference:
-                    paymentData.reference,
-
-                createdAt:
-                    admin.firestore
-                        .FieldValue
-                        .serverTimestamp()
-
-            });
-
-
-            /*
-             * Response
-             */
-
-            res.json({
-
-                success: true,
-
-                data: {
-
-                    authorization_url:
-                        paymentData.authorization_url,
-
-                    access_code:
-                        paymentData.access_code,
-
-                    reference:
-                        paymentData.reference,
-
-                    transactionId:
-                        transactionId
-
-                }
-
-            });
-
-        } catch (error) {
-
-            console.error(
-
-                "Paystack initialization error:",
-
-                error.response?.data ||
-                error.message
-
-            );
-
-
-            res.status(500).json({
-
-                success: false,
-
-                message:
-                    "Unable to initialize payment"
-
-            });
-
-        }
-
-    }
-);
-
-
-/*
- * =====================================================
- * PAYSTACK VERIFY PAYMENT
- * =====================================================
- */
-
-app.get(
-    "/api/payment/verify/:reference",
-    async (req, res) => {
-
-        try {
-
-            const reference =
-                req.params.reference;
-
-
-            /*
-             * Reference
-             */
-
-            if (!reference) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Transaction reference is required"
-
-                });
-
-            }
-
-
-            /*
-             * Firebase
-             */
-
-            if (!db) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "Firebase is not initialized"
-
-                });
-
-            }
-
-
-            /*
-             * Paystack key
-             */
-
-            if (
-                !process.env.PAYSTACK_SECRET_KEY
-            ) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "PAYSTACK_SECRET_KEY is not configured"
-
-                });
-
-            }
-
-
-            /*
-             * Find transaction
-             */
-
-            const snapshot =
-                await db
-                    .collection(
-                        "walletTransactions"
-                    )
-                    .where(
-                        "reference",
-                        "==",
-                        reference
-                    )
-                    .limit(1)
-                    .get();
-
-
-            /*
-             * Not found
-             */
-
-            if (
-                snapshot.empty
-            ) {
-
-                return res.status(404).json({
-
-                    success: false,
-
-                    message:
-                        "Transaction not found"
-
-                });
-
-            }
-
-
-            const transactionDoc =
-                snapshot.docs[0];
-
-
-            const transaction =
-                transactionDoc.data();
-
-
-            /*
-             * Already completed
-             */
-
-            if (
-                transaction.status ===
-                "completed"
-            ) {
-
-                return res.json({
-
-                    success: true,
-
-                    message:
-                        "Payment already processed",
-
-                    status:
-                        "success",
-
-                    reference:
-                        reference
-
-                });
-
-            }
-
-
-            /*
-             * Verify Paystack
-             */
-
-            const response =
-                await axios.get(
-
-                    `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
-
-                    {
-
-                        headers: {
-
-                            Authorization:
-                                `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
-
-                        }
-
-                    }
-
-                );
-
-
-            const payment =
-                response.data.data;
-
-
-            /*
-             * Payment failed
-             */
-
-            if (
-                payment.status !==
-                "success"
-            ) {
-
-                await transactionDoc.ref.update({
-
-                    status:
-                        payment.status ||
-                        "failed",
-
-                    verifiedAt:
-                        admin.firestore
-                            .FieldValue
-                            .serverTimestamp()
-
-                });
-
-
-                return res.json({
-
-                    success: false,
-
-                    status:
-                        payment.status,
-
-                    message:
-                        "Payment has not been completed"
-
-                });
-
-            }
-
-
-            /*
-             * Amount check
-             */
-
-            if (
-                Number(payment.amount) !==
-                Number(transaction.amountKobo)
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Payment amount does not match"
-
-                });
-
-            }
-
-
-            /*
-             * =================================================
-             * CREDIT WALLET
-             * =================================================
-             */
-
-            await db.runTransaction(
-
-                async (
-                    firestoreTransaction
-                ) => {
-
-                    /*
-                     * User
-                     */
-
-                    const userRef =
-                        db
-                            .collection(
-                                "users"
-                            )
-                            .doc(
-                                transaction.userId
-                            );
-
-
-                    /*
-                     * Transaction
-                     */
-
-                    const walletTransactionRef =
-                        transactionDoc.ref;
-
-
-                    /*
-                     * Read user
-                     */
-
-                    const userSnapshot =
-                        await firestoreTransaction.get(
-                            userRef
-                        );
-
-
-                    /*
-                     * Read transaction
-                     */
-
-                    const transactionSnapshot =
-                        await firestoreTransaction.get(
-                            walletTransactionRef
-                        );
-
-
-                    const currentTransaction =
-                        transactionSnapshot.data();
-
-
-                    /*
-                     * Prevent double credit
-                     */
-
-                    if (
-                        currentTransaction &&
-                        currentTransaction.status ===
-                        "completed"
-                    ) {
-
-                        return;
-
-                    }
-
-
-                    /*
-                     * Current wallet
-                     */
-
-                    const currentBalance =
-                        userSnapshot.exists
-                            ? Number(
-                                userSnapshot
-                                    .data()
-                                    .walletBalance || 0
-                            )
-                            : 0;
-
-
-                    /*
-                     * New balance
-                     */
-
-                    const newBalance =
-                        currentBalance +
-                        Number(
-                            transaction.amount
-                        );
-
-
-                    /*
-                     * Update wallet
-                     */
-
-                    firestoreTransaction.set(
-
-                        userRef,
-
-                        {
-
-                            walletBalance:
-                                newBalance,
-
-                            updatedAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-
-                        },
-
-                        {
-
-                            merge:
-                                true
-
-                        }
-
-                    );
-
-
-                    /*
-                     * Complete transaction
-                     */
-
-                    firestoreTransaction.update(
-
-                        walletTransactionRef,
-
-                        {
-
-                            status:
-                                "completed",
-
-                            paystackStatus:
-                                payment.status,
-
-                            paidAt:
-                                payment.paid_at ||
-                                null,
-
-                            verifiedAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-
-                        }
-
-                    );
-
-                }
-
-            );
-
-
-            /*
-             * Success
-             */
-
-            res.json({
-
-                success: true,
-
-                message:
-                    "Payment verified and wallet funded successfully",
-
-                status:
-                    "success",
-
-                reference:
-                    payment.reference,
-
-                amount:
-                    payment.amount,
-
-                currency:
-                    payment.currency,
-
-                paidAt:
-                    payment.paid_at ||
-                    null
-
-            });
-
-        } catch (error) {
-
-            console.error(
-
-                "Paystack verification error:",
-
-                error.response?.data ||
-                error.message
-
-            );
-
-
-            res.status(500).json({
-
-                success: false,
-
-                message:
-                    "Unable to verify payment",
-
-                error:
-                    error.message
-
-            });
-
-        }
-
-    }
-);
-
-/*
- * =====================================================
- * BUY DATA
- * =====================================================
- */
-
-app.post(
-    "/api/vtpass/buy-data",
-    async (req, res) => {
-
-        try {
-
-            const {
-                uid,
-                network,
-                phone,
-                variation_code,
-                amount
-            } = req.body;
-
-            // ==============================
-            // VALIDATION
-            // ==============================
-
-            if (
-                !uid ||
-                !network ||
-                !phone ||
-                !variation_code ||
-                !amount
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "uid, network, phone, variation_code and amount are required"
-
-                });
-
-            }
-
-            if (!db) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "Firebase is not initialized"
-
-                });
-
-            }
-
-            if (!process.env.VTPASS_API_KEY) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "VTPASS_API_KEY is not configured"
-
-                });
-
-            }
-
-            if (!process.env.VTPASS_SECRET_KEY) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "VTPASS_SECRET_KEY is not configured"
-
-                });
-
-            }
-
-            // ==============================
-            // NETWORK → SERVICE ID
-            // ==============================
-
-            const serviceMap = {
-
-                mtn:
-                    "mtn-data",
-
-                airtel:
-                    "airtel-data",
-
-                glo:
-                    "glo-data",
-
-                "9mobile":
-                    "etisalat-data",
-
-                etisalat:
-                    "etisalat-data"
-
-            };
-
-            const normalizedNetwork =
-                network.toLowerCase().trim();
-
-            const serviceID =
-                serviceMap[normalizedNetwork];
-
-            if (!serviceID) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Unsupported network"
-
-                });
-
-            }
-
-            // ==============================
-            // AMOUNT
-            // ==============================
-
-            const amountNumber =
-                Number(amount);
-
-            if (
-                !Number.isFinite(amountNumber) ||
-                amountNumber <= 0
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Invalid amount"
-
-                });
-
-            }
-
-            // ==============================
-            // PHONE VALIDATION
-            // ==============================
-
-            const cleanPhone =
-                String(phone).replace(/\D/g, "");
-
-            if (cleanPhone.length !== 11) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Phone number must be 11 digits"
-
-                });
-
-            }
-
-            // ==============================
-            // USER
-            // ==============================
-
-            const userRef =
-                db.collection("users").doc(uid);
-
-            const userSnapshot =
-                await userRef.get();
-
-            if (!userSnapshot.exists) {
-
-                return res.status(404).json({
-
-                    success: false,
-
-                    message:
-                        "User not found"
-
-                });
-
-            }
-
-            const userData =
-                userSnapshot.data();
-
-            const currentBalance =
-                Number(
-                    userData.walletBalance || 0
-                );
-
-            // ==============================
-            // CHECK WALLET
-            // ==============================
-
-            if (currentBalance < amountNumber) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Insufficient wallet balance",
-
-                    walletBalance:
-                        currentBalance,
-
-                    required:
-                        amountNumber
-
-                });
-
-            }
-
-            // ==============================
-            // REQUEST ID
-            // ==============================
-
-            const requestId =
-                "IDD" +
-                Date.now() +
-                Math.floor(
-                    Math.random() * 1000
-                );
-
-            // ==============================
-            // VTpass PURCHASE
-            // ==============================
+            -----------------------------------------
+            VTpass PURCHASE
+            -----------------------------------------
+            */
 
             const vtpassResponse =
                 await axios.post(
 
-                    "https://sandbox.vtpass.com/api/pay",
+                    `${VTPASS_BASE_URL}/pay`,
 
                     {
 
@@ -2103,10 +844,12 @@ app.post(
                             cleanPhone,
 
                         variation_code:
-                            variation_code,
+                            String(
+                                variation_code
+                            ),
 
                         amount:
-                            amountNumber,
+                            purchaseAmount,
 
                         phone:
                             cleanPhone
@@ -2126,33 +869,36 @@ app.post(
                             "Content-Type":
                                 "application/json"
 
-                        }
+                        },
+
+                        timeout: 60000
 
                     }
 
                 );
 
             const vtpassData =
-                vtpassResponse.data;
+                vtpassResponse.data || {};
 
             console.log(
                 "VTpass purchase:",
                 vtpassData
             );
 
-            // ==============================
-            // CHECK VTpass RESPONSE
-            // ==============================
+            /*
+            -----------------------------------------
+            RESPONSE CODE
+            -----------------------------------------
+            */
 
             const responseCode =
                 String(
                     vtpassData.code || ""
                 );
 
-            const successful =
-                responseCode === "000";
-
-            if (!successful) {
+            if (
+                responseCode !== "000"
+            ) {
 
                 return res.status(400).json({
 
@@ -2162,30 +908,50 @@ app.post(
                         vtpassData.response_description ||
                         "Data purchase failed",
 
-                    vtpass:
-                        vtpassData
+                    code:
+                        responseCode || null
 
                 });
 
             }
 
-            // ==============================
-            // DEDUCT WALLET + SAVE TRANSACTION
-            // ==============================
+            /*
+            -----------------------------------------
+            TRANSACTION
+            -----------------------------------------
+            */
 
             const transactionRef =
                 db
                     .collection("transactions")
                     .doc();
 
+            /*
+            -----------------------------------------
+            DEDUCT WALLET
+            -----------------------------------------
+            */
+
+            let newBalance = 0;
+
             await db.runTransaction(
 
-                async (transaction) => {
+                async (
+                    firestoreTransaction
+                ) => {
 
                     const freshUser =
-                        await transaction.get(
+                        await firestoreTransaction.get(
                             userRef
                         );
+
+                    if (!freshUser.exists) {
+
+                        throw new Error(
+                            "User not found"
+                        );
+
+                    }
 
                     const freshData =
                         freshUser.data() || {};
@@ -2197,7 +963,7 @@ app.post(
 
                     if (
                         freshBalance <
-                        amountNumber
+                        purchaseAmount
                     ) {
 
                         throw new Error(
@@ -2206,11 +972,11 @@ app.post(
 
                     }
 
-                    const newBalance =
+                    newBalance =
                         freshBalance -
-                        amountNumber;
+                        purchaseAmount;
 
-                    transaction.update(
+                    firestoreTransaction.update(
 
                         userRef,
 
@@ -2228,14 +994,14 @@ app.post(
 
                     );
 
-                    transaction.set(
+                    firestoreTransaction.set(
 
                         transactionRef,
 
                         {
 
                             userId:
-                                uid,
+                                String(uid),
 
                             type:
                                 "data_purchase",
@@ -2247,10 +1013,12 @@ app.post(
                                 cleanPhone,
 
                             variationCode:
-                                variation_code,
+                                String(
+                                    variation_code
+                                ),
 
                             amount:
-                                amountNumber,
+                                purchaseAmount,
 
                             serviceID:
                                 serviceID,
@@ -2277,11 +1045,13 @@ app.post(
 
             );
 
-            // ==============================
-            // SUCCESS
-            // ==============================
+            /*
+            -----------------------------------------
+            SUCCESS
+            -----------------------------------------
+            */
 
-            res.json({
+            return res.json({
 
                 success: true,
 
@@ -2291,6 +1061,9 @@ app.post(
                 transactionId:
                     transactionRef.id,
 
+                requestId:
+                    requestId,
+
                 network:
                     normalizedNetwork,
 
@@ -2298,26 +1071,38 @@ app.post(
                     cleanPhone,
 
                 amount:
-                    amountNumber,
+                    purchaseAmount,
 
                 walletBalance:
-                    currentBalance -
-                    amountNumber,
-
-                vtpass:
-                    vtpassData
+                    newBalance
 
             });
 
         } catch (error) {
 
             console.error(
-                "Buy data error:",
+                "BUY DATA ERROR:",
                 error.response?.data ||
                 error.message
             );
 
-            res.status(500).json({
+            if (
+                error.message ===
+                "Insufficient wallet balance"
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Insufficient wallet balance"
+
+                });
+
+            }
+
+            return res.status(500).json({
 
                 success: false,
 
@@ -2334,22 +1119,807 @@ app.post(
 
     }
 );
+
 /*
- * =====================================================
- * START SERVER
- * =====================================================
- */
+=====================================================
+PAYSTACK INITIALIZE
+=====================================================
+*/
 
-const PORT =
-    process.env.PORT || 3000;
+app.post(
+    "/api/payment/initialize",
+    async (req, res) => {
 
+        try {
+
+            const {
+
+                email,
+
+                amount,
+
+                uid
+
+            } = req.body;
+
+            /*
+            -----------------------------------------
+            VALIDATION
+            -----------------------------------------
+            */
+
+            if (
+                !email ||
+                !amount ||
+                !uid
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Email, amount and uid are required"
+
+                });
+
+            }
+
+            if (!db) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "Firebase is not initialized"
+
+                });
+
+            }
+
+            if (
+                !process.env.PAYSTACK_SECRET_KEY
+            ) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "PAYSTACK_SECRET_KEY is not configured"
+
+                });
+
+            }
+
+            const amountNumber =
+                Number(amount);
+
+            /*
+            -----------------------------------------
+            MINIMUM
+            -----------------------------------------
+            */
+
+            if (
+                !Number.isFinite(
+                    amountNumber
+                ) ||
+                amountNumber < 100
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Minimum payment is ₦100"
+
+                });
+
+            }
+
+            /*
+            -----------------------------------------
+            NAIRA → KOBO
+            -----------------------------------------
+            */
+
+            const amountInKobo =
+                Math.round(
+                    amountNumber * 100
+                );
+
+            /*
+            -----------------------------------------
+            FIRESTORE TRANSACTION
+            -----------------------------------------
+            */
+
+            const transactionRef =
+                db
+                    .collection(
+                        "walletTransactions"
+                    )
+                    .doc();
+
+            const transactionId =
+                transactionRef.id;
+
+            /*
+            -----------------------------------------
+            PAYSTACK
+            -----------------------------------------
+            */
+
+            const response =
+                await axios.post(
+
+                    `${PAYSTACK_BASE_URL}/transaction/initialize`,
+
+                    {
+
+                        email:
+                            String(email)
+                                .trim(),
+
+                        amount:
+                            amountInKobo,
+
+                        currency:
+                            "NGN",
+
+                        metadata: {
+
+                            userId:
+                                String(uid),
+
+                            transactionId:
+                                transactionId
+
+                        }
+
+                    },
+
+                    {
+
+                        headers: {
+
+                            Authorization:
+                                `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+
+                            "Content-Type":
+                                "application/json"
+
+                        },
+
+                        timeout: 30000
+
+                    }
+
+                );
+
+            if (
+                !response.data ||
+                !response.data.status
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        response.data?.message ||
+                        "Paystack initialization failed"
+
+                });
+
+            }
+
+            const paymentData =
+                response.data.data;
+
+            /*
+            -----------------------------------------
+            SAVE PENDING PAYMENT
+            -----------------------------------------
+            */
+
+            await transactionRef.set({
+
+                userId:
+                    String(uid),
+
+                email:
+                    String(email)
+                        .trim(),
+
+                amount:
+                    amountNumber,
+
+                amountKobo:
+                    amountInKobo,
+
+                type:
+                    "wallet_funding",
+
+                status:
+                    "pending",
+
+                reference:
+                    paymentData.reference,
+
+                createdAt:
+                    admin.firestore
+                        .FieldValue
+                        .serverTimestamp()
+
+            });
+
+            /*
+            -----------------------------------------
+            RESPONSE
+            -----------------------------------------
+            */
+
+            return res.json({
+
+                success: true,
+
+                data: {
+
+                    authorization_url:
+                        paymentData.authorization_url,
+
+                    access_code:
+                        paymentData.access_code,
+
+                    reference:
+                        paymentData.reference,
+
+                    transactionId:
+                        transactionId
+
+                }
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Paystack initialization error:",
+                error.response?.data ||
+                error.message
+            );
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to initialize payment",
+
+                error:
+                    error.response?.data ||
+                    error.message
+
+            });
+
+        }
+
+    }
+);
+
+/*
+=====================================================
+PAYSTACK VERIFY
+=====================================================
+*/
+
+app.get(
+    "/api/payment/verify/:reference",
+    async (req, res) => {
+
+        try {
+
+            const reference =
+                String(
+                    req.params.reference || ""
+                ).trim();
+
+            if (!reference) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Transaction reference is required"
+
+                });
+
+            }
+
+            if (!db) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "Firebase is not initialized"
+
+                });
+
+            }
+
+            if (
+                !process.env.PAYSTACK_SECRET_KEY
+            ) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "PAYSTACK_SECRET_KEY is not configured"
+
+                });
+
+            }
+
+            /*
+            -----------------------------------------
+            FIND TRANSACTION
+            -----------------------------------------
+            */
+
+            const snapshot =
+                await db
+                    .collection(
+                        "walletTransactions"
+                    )
+                    .where(
+                        "reference",
+                        "==",
+                        reference
+                    )
+                    .limit(1)
+                    .get();
+
+            if (
+                snapshot.empty
+            ) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "Transaction not found"
+
+                });
+
+            }
+
+            const transactionDoc =
+                snapshot.docs[0];
+
+            const transaction =
+                transactionDoc.data();
+
+            /*
+            -----------------------------------------
+            ALREADY COMPLETED
+            -----------------------------------------
+            */
+
+            if (
+                transaction.status ===
+                "completed"
+            ) {
+
+                return res.json({
+
+                    success: true,
+
+                    message:
+                        "Payment already processed",
+
+                    status:
+                        "success",
+
+                    reference:
+                        reference
+
+                });
+
+            }
+
+            /*
+            -----------------------------------------
+            VERIFY PAYSTACK
+            -----------------------------------------
+            */
+
+            const response =
+                await axios.get(
+
+                    `${PAYSTACK_BASE_URL}/transaction/verify/${encodeURIComponent(reference)}`,
+
+                    {
+
+                        headers: {
+
+                            Authorization:
+                                `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
+
+                        },
+
+                        timeout: 30000
+
+                    }
+
+                );
+
+            const payment =
+                response.data?.data;
+
+            if (!payment) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "Invalid Paystack response"
+
+                });
+
+            }
+
+            /*
+            -----------------------------------------
+            PAYMENT NOT SUCCESSFUL
+            -----------------------------------------
+            */
+
+            if (
+                payment.status !==
+                "success"
+            ) {
+
+                await transactionDoc.ref.update({
+
+                    status:
+                        payment.status ||
+                        "failed",
+
+                    verifiedAt:
+                        admin.firestore
+                            .FieldValue
+                            .serverTimestamp()
+
+                });
+
+                return res.json({
+
+                    success: false,
+
+                    status:
+                        payment.status,
+
+                    message:
+                        "Payment has not been completed"
+
+                });
+
+            }
+
+            /*
+            -----------------------------------------
+            CHECK AMOUNT
+            -----------------------------------------
+            */
+
+            if (
+                Number(payment.amount) !==
+                Number(transaction.amountKobo)
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Payment amount does not match"
+
+                });
+
+            }
+
+            /*
+            -----------------------------------------
+            CREDIT WALLET
+            -----------------------------------------
+            */
+
+            const userRef =
+                db
+                    .collection("users")
+                    .doc(
+                        transaction.userId
+                    );
+
+            await db.runTransaction(
+
+                async (
+                    firestoreTransaction
+                ) => {
+
+                    /*
+                    Read transaction FIRST
+                    */
+
+                    const transactionSnapshot =
+                        await firestoreTransaction.get(
+                            transactionDoc.ref
+                        );
+
+                    const currentTransaction =
+                        transactionSnapshot.data();
+
+                    /*
+                    Prevent double credit
+                    */
+
+                    if (
+                        currentTransaction &&
+                        currentTransaction.status ===
+                        "completed"
+                    ) {
+
+                        return;
+
+                    }
+
+                    /*
+                    Read user
+                    */
+
+                    const userSnapshot =
+                        await firestoreTransaction.get(
+                            userRef
+                        );
+
+                    const currentBalance =
+                        userSnapshot.exists
+                            ? Number(
+                                userSnapshot
+                                    .data()
+                                    .walletBalance || 0
+                            )
+                            : 0;
+
+                    const newBalance =
+                        currentBalance +
+                        Number(
+                            transaction.amount
+                        );
+
+                    /*
+                    Update wallet
+                    */
+
+                    firestoreTransaction.set(
+
+                        userRef,
+
+                        {
+
+                            walletBalance:
+                                newBalance,
+
+                            updatedAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        },
+
+                        {
+
+                            merge:
+                                true
+
+                        }
+
+                    );
+
+                    /*
+                    Complete payment
+                    */
+
+                    firestoreTransaction.update(
+
+                        transactionDoc.ref,
+
+                        {
+
+                            status:
+                                "completed",
+
+                            paystackStatus:
+                                payment.status,
+
+                            paystackReference:
+                                payment.reference,
+
+                            paidAt:
+                                payment.paid_at ||
+                                null,
+
+                            verifiedAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+                }
+
+            );
+
+            /*
+            -----------------------------------------
+            SUCCESS
+            -----------------------------------------
+            */
+
+            return res.json({
+
+                success: true,
+
+                message:
+                    "Payment verified and wallet funded successfully",
+
+                status:
+                    "success",
+
+                reference:
+                    payment.reference,
+
+                amount:
+                    Number(payment.amount) / 100,
+
+                currency:
+                    payment.currency,
+
+                paidAt:
+                    payment.paid_at || null
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Paystack verification error:",
+                error.response?.data ||
+                error.message
+            );
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to verify payment",
+
+                error:
+                    error.response?.data ||
+                    error.message
+
+            });
+
+        }
+
+    }
+);
+
+/*
+=====================================================
+404 ROUTE
+=====================================================
+*/
+
+app.use(
+    (req, res) => {
+
+        res.status(404).json({
+
+            success: false,
+
+            message:
+                "API route not found",
+
+            path:
+                req.originalUrl
+
+        });
+
+    }
+);
+
+/*
+=====================================================
+GLOBAL ERROR HANDLER
+=====================================================
+*/
+
+app.use(
+    (
+        error,
+        req,
+        res,
+        next
+    ) => {
+
+        console.error(
+            "GLOBAL ERROR:",
+            error
+        );
+
+        res.status(500).json({
+
+            success: false,
+
+            message:
+                "Internal server error"
+
+        });
+
+    }
+);
+
+/*
+=====================================================
+START SERVER
+=====================================================
+*/
 
 app.listen(
     PORT,
     () => {
 
         console.log(
-            `ISMAIL DEEN DATA server running on port ${PORT}`
+            "======================================"
+        );
+
+        console.log(
+            "ISMAIL DEEN DATA BACKEND"
+        );
+
+        console.log(
+            `Server running on port ${PORT}`
+        );
+
+        console.log(
+            `VTpass: ${VTPASS_BASE_URL}`
+        );
+
+        console.log(
+            `Firebase: ${
+                db
+                    ? "Connected"
+                    : "Not Connected"
+            }`
+        );
+
+        console.log(
+            "======================================"
         );
 
     }
