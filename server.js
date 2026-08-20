@@ -25,6 +25,7 @@ const VTPASS_BASE_URL =
 const PAYSTACK_BASE_URL =
     "https://api.paystack.co";
 
+
 /*
 =====================================================
 FIREBASE ADMIN
@@ -62,6 +63,7 @@ try {
     );
 
 }
+
 
 /*
 =====================================================
@@ -129,41 +131,35 @@ function getElectricityServiceId(disco) {
 
     const serviceMap = {
 
-        "Abuja Electricity Distribution Company":
+        "abuja electricity distribution company":
             "abuja-electric",
 
-        "Benin Electricity Distribution Company":
+        "benin electricity distribution company":
             "benin-electric",
 
-        "Eko Electricity Distribution Company":
+        "eko electricity distribution company":
             "eko-electric",
 
-        "Enugu Electricity Distribution Company":
+        "enugu electricity distribution company":
             "enugu-electric",
 
-        "Ibadan Electricity Distribution Company":
+        "ibadan electricity distribution company":
             "ibadan-electric",
 
-        "Ikeja Electricity Distribution Company":
+        "ikeja electricity distribution company":
             "ikeja-electric",
 
-        "Jos Electricity Distribution Company":
+        "jos electricity distribution company":
             "jos-electric",
 
-        "Kaduna Electricity Distribution Company":
+        "kaduna electricity distribution company":
             "kaduna-electric",
 
-        "Kano Electricity Distribution Company":
+        "kano electricity distribution company":
             "kano-electric",
 
-        "Yola Electricity Distribution Company":
-            "yola-electric",
-
-        "Port Harcourt Electricity Distribution Company":
-            "portharcourt-electric",
-
-        "PHED":
-            "portharcourt-electric"
+        "yola electricity distribution company":
+            "yola-electric"
 
     };
 
@@ -171,27 +167,12 @@ function getElectricityServiceId(disco) {
         return null;
     }
 
-    return serviceMap[String(disco).trim()] || null;
-}
+    const normalized =
+        String(disco)
+            .toLowerCase()
+            .trim();
 
-
-/*
-=====================================================
-GENERATE REQUEST ID
-=====================================================
-*/
-
-function generateRequestId() {
-
-    return (
-        "IDD-" +
-        Date.now() +
-        "-" +
-        Math.floor(
-            Math.random() * 1000000
-        )
-    );
-
+    return serviceMap[normalized] || null;
 }
 
 
@@ -226,6 +207,16 @@ HEALTH
 
 app.get("/api/health", async (req, res) => {
 
+    let firebaseStatus =
+        "disconnected";
+
+    if (db) {
+
+        firebaseStatus =
+            "connected";
+
+    }
+
     res.json({
 
         success: true,
@@ -234,7 +225,7 @@ app.get("/api/health", async (req, res) => {
             "online",
 
         firebase:
-            db ? "connected" : "disconnected",
+            firebaseStatus,
 
         time:
             new Date().toISOString()
@@ -274,7 +265,8 @@ app.get(
                 .doc("connection")
                 .set({
 
-                    connected: true,
+                    connected:
+                        true,
 
                     updatedAt:
                         admin.firestore
@@ -285,7 +277,8 @@ app.get(
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 message:
                     "Firebase connected successfully"
@@ -301,7 +294,8 @@ app.get(
 
             return res.status(500).json({
 
-                success: false,
+                success:
+                    false,
 
                 message:
                     "Firebase connection failed",
@@ -329,7 +323,8 @@ app.get(
 
         res.json({
 
-            success: true,
+            success:
+                true,
 
             message:
                 "Payment backend is connected"
@@ -356,7 +351,8 @@ app.get(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Firebase is not initialized"
@@ -374,7 +370,8 @@ app.get(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "UID is required"
@@ -395,10 +392,14 @@ app.get(
 
                 return res.status(404).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
-                        "User not found"
+                        "User not found",
+
+                    uid:
+                        uid
 
                 });
 
@@ -414,7 +415,8 @@ app.get(
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 uid:
                     uid,
@@ -439,7 +441,8 @@ app.get(
 
             return res.status(500).json({
 
-                success: false,
+                success:
+                    false,
 
                 message:
                     "Unable to read wallet",
@@ -481,10 +484,14 @@ app.get(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
-                        "Unsupported network"
+                        "Unsupported network",
+
+                    network:
+                        network
 
                 });
 
@@ -494,7 +501,8 @@ app.get(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "VTPASS_API_KEY is not configured"
@@ -507,7 +515,8 @@ app.get(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "VTPASS_SECRET_KEY is not configured"
@@ -515,6 +524,11 @@ app.get(
                 });
 
             }
+
+            console.log(
+                "Loading VTpass plans:",
+                serviceID
+            );
 
             const response =
                 await axios.get(
@@ -552,7 +566,10 @@ app.get(
                 );
 
             const content =
-                response.data?.content || {};
+                response.data &&
+                response.data.content
+                    ? response.data.content
+                    : {};
 
             const variations =
                 content.variations ||
@@ -561,31 +578,36 @@ app.get(
 
             const plans =
                 variations.map(
-                    (plan) => ({
+                    (plan) => {
 
-                        variation_code:
-                            plan.variation_code,
+                        return {
 
-                        name:
-                            plan.name,
+                            variation_code:
+                                plan.variation_code,
 
-                        amount:
-                            Number(
-                                plan.variation_amount
-                            ),
+                            name:
+                                plan.name,
 
-                        variation_amount:
-                            plan.variation_amount,
+                            amount:
+                                Number(
+                                    plan.variation_amount
+                                ),
 
-                        fixedPrice:
-                            plan.fixedPrice
+                            variation_amount:
+                                plan.variation_amount,
 
-                    })
+                            fixedPrice:
+                                plan.fixedPrice
+
+                        };
+
+                    }
                 );
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 network:
                     network,
@@ -608,7 +630,8 @@ app.get(
 
             return res.status(500).json({
 
-                success: false,
+                success:
+                    false,
 
                 message:
                     "Unable to load VTpass data plans",
@@ -637,6 +660,22 @@ app.post(
 
         try {
 
+            console.log(
+                "===================================="
+            );
+
+            console.log(
+                "BUY DATA REQUEST"
+            );
+
+            console.log(
+                req.body
+            );
+
+            console.log(
+                "===================================="
+            );
+
             const uid =
                 String(
                     req.body.uid || ""
@@ -664,78 +703,150 @@ app.post(
                     req.body.amount
                 );
 
-            if (!uid)
+            if (!uid) {
+
                 return res.status(400).json({
-                    success: false,
-                    message: "UID is required"
+                    success:
+                        false,
+                    message:
+                        "UID is required"
                 });
 
-            if (!network)
+            }
+
+            if (!network) {
+
                 return res.status(400).json({
-                    success: false,
-                    message: "Network is required"
+                    success:
+                        false,
+                    message:
+                        "Network is required"
                 });
 
-            if (!phone)
+            }
+
+            if (!phone) {
+
                 return res.status(400).json({
-                    success: false,
-                    message: "Phone number is required"
+                    success:
+                        false,
+                    message:
+                        "Phone number is required"
                 });
 
-            if (!variationCode)
+            }
+
+            if (!variationCode) {
+
                 return res.status(400).json({
-                    success: false,
-                    message: "Variation code is required"
+                    success:
+                        false,
+                    message:
+                        "Variation code is required"
                 });
+
+            }
 
             if (
                 !Number.isFinite(amount) ||
                 amount <= 0
-            )
+            ) {
+
                 return res.status(400).json({
-                    success: false,
-                    message: "Invalid amount"
+                    success:
+                        false,
+                    message:
+                        "Invalid amount"
                 });
 
-            const cleanPhone =
-                phone.replace(/\D/g, "");
+            }
 
-            if (cleanPhone.length !== 11)
+            const cleanPhone =
+                phone.replace(
+                    /\D/g,
+                    ""
+                );
+
+            if (
+                cleanPhone.length !== 11
+            ) {
+
                 return res.status(400).json({
-                    success: false,
+                    success:
+                        false,
                     message:
                         "Phone number must be 11 digits"
                 });
 
-            if (!db)
+            }
+
+            if (!db) {
+
                 return res.status(500).json({
-                    success: false,
+                    success:
+                        false,
                     message:
                         "Firebase is not initialized"
                 });
 
+            }
+
+            if (!process.env.VTPASS_API_KEY) {
+
+                return res.status(500).json({
+                    success:
+                        false,
+                    message:
+                        "VTPASS_API_KEY is not configured"
+                });
+
+            }
+
+            if (!process.env.VTPASS_SECRET_KEY) {
+
+                return res.status(500).json({
+                    success:
+                        false,
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+                });
+
+            }
+
             const serviceID =
                 getDataServiceId(network);
 
-            if (!serviceID)
+            if (!serviceID) {
+
                 return res.status(400).json({
-                    success: false,
+                    success:
+                        false,
                     message:
-                        "Unsupported network"
+                        "Unsupported network",
+                    network:
+                        network
                 });
 
+            }
+
             const userRef =
-                db.collection("users").doc(uid);
+                db
+                    .collection("users")
+                    .doc(uid);
 
             const userSnapshot =
                 await userRef.get();
 
-            if (!userSnapshot.exists)
+            if (!userSnapshot.exists) {
+
                 return res.status(404).json({
-                    success: false,
+                    success:
+                        false,
                     message:
-                        "User account not found"
+                        "User account not found. Please login again."
                 });
+
+            }
 
             const userData =
                 userSnapshot.data() || {};
@@ -745,19 +856,37 @@ app.post(
                     userData.walletBalance || 0
                 );
 
-            if (walletBalance < amount)
+            if (
+                walletBalance < amount
+            ) {
+
                 return res.status(400).json({
-                    success: false,
+
+                    success:
+                        false,
+
                     message:
                         "Insufficient wallet balance",
+
                     walletBalance:
-                        walletBalance
+                        walletBalance,
+
+                    required:
+                        amount
+
                 });
 
-            const requestId =
-                generateRequestId();
+            }
 
-            const payload = {
+            const requestId =
+                "IDD-" +
+                Date.now() +
+                "-" +
+                Math.floor(
+                    Math.random() * 100000
+                );
+
+            const vtpassPayload = {
 
                 request_id:
                     requestId,
@@ -779,12 +908,17 @@ app.post(
 
             };
 
-            const response =
+            console.log(
+                "VTpass DATA payload:",
+                vtpassPayload
+            );
+
+            const vtpassResponse =
                 await axios.post(
 
                     `${VTPASS_BASE_URL}/pay`,
 
-                    payload,
+                    vtpassPayload,
 
                     {
 
@@ -797,6 +931,9 @@ app.post(
                                 process.env.VTPASS_SECRET_KEY,
 
                             "Content-Type":
+                                "application/json",
+
+                            "Accept":
                                 "application/json"
 
                         },
@@ -809,26 +946,48 @@ app.post(
                 );
 
             const vtpassData =
-                response.data || {};
+                vtpassResponse.data || {};
+
+            console.log(
+                "VTpass DATA response:",
+                JSON.stringify(
+                    vtpassData,
+                    null,
+                    2
+                )
+            );
 
             const vtpassCode =
                 String(
                     vtpassData.code || ""
                 );
 
-            if (vtpassCode !== "000") {
+            const responseDescription =
+                vtpassData
+                    .response_description ||
+                "";
+
+            if (
+                vtpassCode !== "000"
+            ) {
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
-                        vtpassData
-                            .response_description ||
-                        "Data purchase failed",
+                        responseDescription ||
+                        "VTpass transaction failed",
 
                     code:
-                        vtpassCode
+                        vtpassCode || null,
+
+                    requestId:
+                        requestId,
+
+                    vtpass:
+                        vtpassData
 
                 });
 
@@ -836,10 +995,13 @@ app.post(
 
             const transactionRef =
                 db
-                    .collection("transactions")
+                    .collection(
+                        "transactions"
+                    )
                     .doc();
 
-            let newBalance = 0;
+            let newBalance =
+                0;
 
             await db.runTransaction(
                 async (transaction) => {
@@ -848,6 +1010,14 @@ app.post(
                         await transaction.get(
                             userRef
                         );
+
+                    if (!freshUser.exists) {
+
+                        throw new Error(
+                            "User not found"
+                        );
+
+                    }
 
                     const freshData =
                         freshUser.data() || {};
@@ -873,7 +1043,9 @@ app.post(
                         amount;
 
                     transaction.update(
+
                         userRef,
+
                         {
 
                             walletBalance:
@@ -885,10 +1057,13 @@ app.post(
                                     .serverTimestamp()
 
                         }
+
                     );
 
                     transaction.set(
+
                         transactionRef,
+
                         {
 
                             userId:
@@ -903,11 +1078,11 @@ app.post(
                             phone:
                                 cleanPhone,
 
-                            amount:
-                                amount,
-
                             variationCode:
                                 variationCode,
+
+                            amount:
+                                amount,
 
                             serviceID:
                                 serviceID,
@@ -915,11 +1090,14 @@ app.post(
                             requestId:
                                 requestId,
 
-                            status:
-                                "successful",
-
                             vtpassCode:
                                 vtpassCode,
+
+                            responseDescription:
+                                responseDescription,
+
+                            status:
+                                "successful",
 
                             createdAt:
                                 admin.firestore
@@ -927,6 +1105,7 @@ app.post(
                                     .serverTimestamp()
 
                         }
+
                     );
 
                 }
@@ -934,7 +1113,8 @@ app.post(
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 message:
                     "Data purchase successful",
@@ -945,8 +1125,20 @@ app.post(
                 requestId:
                     requestId,
 
+                network:
+                    network,
+
+                phone:
+                    cleanPhone,
+
+                amount:
+                    amount,
+
                 walletBalance:
-                    newBalance
+                    newBalance,
+
+                vtpass:
+                    vtpassData
 
             });
 
@@ -958,15 +1150,45 @@ app.post(
                 error.message
             );
 
-            return res.status(
-                error.response?.status || 500
-            ).json({
+            if (error.response) {
 
-                success: false,
+                return res.status(
+                    error.response.status || 500
+                ).json({
+
+                    success:
+                        false,
+
+                    message:
+                        error.response
+                            .data
+                            ?.response_description ||
+                        error.response
+                            .data
+                            ?.message ||
+                        "VTpass transaction failed",
+
+                    code:
+                        error.response
+                            .data
+                            ?.code ||
+                        null,
+
+                    vtpass:
+                        error.response
+                            .data ||
+                        null
+
+                });
+
+            }
+
+            return res.status(500).json({
+
+                success:
+                    false,
 
                 message:
-                    error.response?.data
-                        ?.response_description ||
                     error.message ||
                     "Unable to complete data purchase"
 
@@ -990,6 +1212,22 @@ app.post(
 
         try {
 
+            console.log(
+                "===================================="
+            );
+
+            console.log(
+                "BUY AIRTIME REQUEST"
+            );
+
+            console.log(
+                req.body
+            );
+
+            console.log(
+                "===================================="
+            );
+
             const uid =
                 String(
                     req.body.uid || ""
@@ -1012,78 +1250,141 @@ app.post(
                     req.body.amount
                 );
 
-            if (!uid)
+            if (!uid) {
+
                 return res.status(400).json({
-                    success: false,
+                    success:
+                        false,
                     message:
                         "UID is required"
                 });
 
-            if (!network)
+            }
+
+            if (!network) {
+
                 return res.status(400).json({
-                    success: false,
+                    success:
+                        false,
                     message:
                         "Network is required"
                 });
 
-            if (!phone)
+            }
+
+            if (!phone) {
+
                 return res.status(400).json({
-                    success: false,
+                    success:
+                        false,
                     message:
                         "Phone number is required"
                 });
 
+            }
+
             if (
                 !Number.isFinite(amount) ||
                 amount <= 0
-            )
+            ) {
+
                 return res.status(400).json({
-                    success: false,
+                    success:
+                        false,
                     message:
                         "Invalid airtime amount"
                 });
 
-            const cleanPhone =
-                phone.replace(/\D/g, "");
+            }
 
-            if (cleanPhone.length !== 11)
+            const cleanPhone =
+                phone.replace(
+                    /\D/g,
+                    ""
+                );
+
+            if (
+                cleanPhone.length !== 11
+            ) {
+
                 return res.status(400).json({
-                    success: false,
+                    success:
+                        false,
                     message:
                         "Phone number must be 11 digits"
                 });
 
-            if (!db)
+            }
+
+            if (!db) {
+
                 return res.status(500).json({
-                    success: false,
+                    success:
+                        false,
                     message:
                         "Firebase is not initialized"
                 });
+
+            }
+
+            if (!process.env.VTPASS_API_KEY) {
+
+                return res.status(500).json({
+                    success:
+                        false,
+                    message:
+                        "VTPASS_API_KEY is not configured"
+                });
+
+            }
+
+            if (!process.env.VTPASS_SECRET_KEY) {
+
+                return res.status(500).json({
+                    success:
+                        false,
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+                });
+
+            }
 
             const serviceID =
                 getAirtimeServiceId(
                     network
                 );
 
-            if (!serviceID)
+            if (!serviceID) {
+
                 return res.status(400).json({
-                    success: false,
+                    success:
+                        false,
                     message:
-                        "Unsupported network"
+                        "Unsupported network",
+                    network:
+                        network
                 });
 
+            }
+
             const userRef =
-                db.collection("users").doc(uid);
+                db
+                    .collection("users")
+                    .doc(uid);
 
             const userSnapshot =
                 await userRef.get();
 
-            if (!userSnapshot.exists)
+            if (!userSnapshot.exists) {
+
                 return res.status(404).json({
-                    success: false,
+                    success:
+                        false,
                     message:
-                        "User account not found"
+                        "User account not found. Please login again."
                 });
+
+            }
 
             const userData =
                 userSnapshot.data() || {};
@@ -1095,19 +1396,35 @@ app.post(
 
             if (
                 walletBalance < amount
-            )
+            ) {
+
                 return res.status(400).json({
-                    success: false,
+
+                    success:
+                        false,
+
                     message:
                         "Insufficient wallet balance",
+
                     walletBalance:
-                        walletBalance
+                        walletBalance,
+
+                    required:
+                        amount
+
                 });
 
-            const requestId =
-                generateRequestId();
+            }
 
-            const payload = {
+            const requestId =
+                "IDD-" +
+                Date.now() +
+                "-" +
+                Math.floor(
+                    Math.random() * 100000
+                );
+
+            const vtpassPayload = {
 
                 request_id:
                     requestId,
@@ -1123,12 +1440,17 @@ app.post(
 
             };
 
-            const response =
+            console.log(
+                "VTpass AIRTIME payload:",
+                vtpassPayload
+            );
+
+            const vtpassResponse =
                 await axios.post(
 
                     `${VTPASS_BASE_URL}/pay`,
 
-                    payload,
+                    vtpassPayload,
 
                     {
 
@@ -1141,6 +1463,9 @@ app.post(
                                 process.env.VTPASS_SECRET_KEY,
 
                             "Content-Type":
+                                "application/json",
+
+                            "Accept":
                                 "application/json"
 
                         },
@@ -1153,26 +1478,48 @@ app.post(
                 );
 
             const vtpassData =
-                response.data || {};
+                vtpassResponse.data || {};
+
+            console.log(
+                "VTpass AIRTIME response:",
+                JSON.stringify(
+                    vtpassData,
+                    null,
+                    2
+                )
+            );
 
             const vtpassCode =
                 String(
                     vtpassData.code || ""
                 );
 
-            if (vtpassCode !== "000") {
+            const responseDescription =
+                vtpassData
+                    .response_description ||
+                "";
+
+            if (
+                vtpassCode !== "000"
+            ) {
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
-                        vtpassData
-                            .response_description ||
+                        responseDescription ||
                         "Airtime purchase failed",
 
                     code:
-                        vtpassCode
+                        vtpassCode || null,
+
+                    requestId:
+                        requestId,
+
+                    vtpass:
+                        vtpassData
 
                 });
 
@@ -1180,10 +1527,13 @@ app.post(
 
             const transactionRef =
                 db
-                    .collection("transactions")
+                    .collection(
+                        "transactions"
+                    )
                     .doc();
 
-            let newBalance = 0;
+            let newBalance =
+                0;
 
             await db.runTransaction(
                 async (transaction) => {
@@ -1192,6 +1542,14 @@ app.post(
                         await transaction.get(
                             userRef
                         );
+
+                    if (!freshUser.exists) {
+
+                        throw new Error(
+                            "User not found"
+                        );
+
+                    }
 
                     const freshData =
                         freshUser.data() || {};
@@ -1217,7 +1575,9 @@ app.post(
                         amount;
 
                     transaction.update(
+
                         userRef,
+
                         {
 
                             walletBalance:
@@ -1229,10 +1589,13 @@ app.post(
                                     .serverTimestamp()
 
                         }
+
                     );
 
                     transaction.set(
+
                         transactionRef,
+
                         {
 
                             userId:
@@ -1256,11 +1619,14 @@ app.post(
                             requestId:
                                 requestId,
 
-                            status:
-                                "successful",
-
                             vtpassCode:
                                 vtpassCode,
+
+                            responseDescription:
+                                responseDescription,
+
+                            status:
+                                "successful",
 
                             createdAt:
                                 admin.firestore
@@ -1268,6 +1634,7 @@ app.post(
                                     .serverTimestamp()
 
                         }
+
                     );
 
                 }
@@ -1275,7 +1642,8 @@ app.post(
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 message:
                     "Airtime purchase successful",
@@ -1296,7 +1664,10 @@ app.post(
                     amount,
 
                 walletBalance:
-                    newBalance
+                    newBalance,
+
+                vtpass:
+                    vtpassData
 
             });
 
@@ -1308,233 +1679,48 @@ app.post(
                 error.message
             );
 
-            return res.status(
-                error.response?.status || 500
-            ).json({
+            if (error.response) {
 
-                success: false,
+                return res.status(
+                    error.response.status ||
+                    500
+                ).json({
 
-                message:
-                    error.response?.data
-                        ?.response_description ||
-                    error.message ||
-                    "Unable to complete airtime purchase"
-
-            });
-
-        }
-
-    }
-);
-
-
-/*
-=====================================================
-ELECTRICITY — VERIFY METER
-=====================================================
-*/
-
-app.post(
-    "/api/vtpass/verify-electricity",
-    async (req, res) => {
-
-        try {
-
-            const disco =
-                String(
-                    req.body.disco || ""
-                ).trim();
-
-            const meterNumber =
-                String(
-                    req.body.meter_number || ""
-                ).trim();
-
-            const meterType =
-                String(
-                    req.body.meter_type || ""
-                )
-                    .toLowerCase()
-                    .trim();
-
-            const serviceID =
-                getElectricityServiceId(
-                    disco
-                );
-
-            if (!serviceID) {
-
-                return res.status(400).json({
-
-                    success: false,
+                    success:
+                        false,
 
                     message:
-                        "Unsupported electricity provider"
+                        error.response
+                            .data
+                            ?.response_description ||
+                        error.response
+                            .data
+                            ?.message ||
+                        "VTpass airtime transaction failed",
 
-                });
-
-            }
-
-            if (!meterNumber) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Meter number is required"
-
-                });
-
-            }
-
-            if (
-                meterType !== "prepaid" &&
-                meterType !== "postpaid"
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Meter type must be prepaid or postpaid"
-
-                });
-
-            }
-
-            if (!process.env.VTPASS_API_KEY) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "VTPASS_API_KEY is not configured"
-
-                });
-
-            }
-
-            if (!process.env.VTPASS_SECRET_KEY) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    message:
-                        "VTPASS_SECRET_KEY is not configured"
-
-                });
-
-            }
-
-            const response =
-                await axios.post(
-
-                    `${VTPASS_BASE_URL}/merchant-verify`,
-
-                    {
-
-                        billersCode:
-                            meterNumber,
-
-                        serviceID:
-                            serviceID,
-
-                        type:
-                            meterType
-
-                    },
-
-                    {
-
-                        headers: {
-
-                            "api-key":
-                                process.env.VTPASS_API_KEY,
-
-                            "secret-key":
-                                process.env.VTPASS_SECRET_KEY,
-
-                            "Content-Type":
-                                "application/json"
-
-                        },
-
-                        timeout:
-                            30000
-
-                    }
-
-                );
-
-            const data =
-                response.data || {};
-
-            const code =
-                String(
-                    data.code || ""
-                );
-
-            if (code !== "000") {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        data.response_description ||
-                        "Meter verification failed",
+                    code:
+                        error.response
+                            .data
+                            ?.code ||
+                        null,
 
                     vtpass:
-                        data
+                        error.response
+                            .data ||
+                        null
 
                 });
 
             }
 
-            return res.json({
+            return res.status(500).json({
 
-                success: true,
-
-                message:
-                    "Meter verified successfully",
-
-                serviceID:
-                    serviceID,
-
-                meterNumber:
-                    meterNumber,
-
-                meterType:
-                    meterType,
-
-                customer:
-                    data.content || {}
-
-            });
-
-        } catch (error) {
-
-            console.error(
-                "VERIFY ELECTRICITY ERROR:",
-                error.response?.data ||
-                error.message
-            );
-
-            return res.status(
-                error.response?.status || 500
-            ).json({
-
-                success: false,
+                success:
+                    false,
 
                 message:
-                    error.response?.data
-                        ?.response_description ||
                     error.message ||
-                    "Unable to verify meter"
+                    "Unable to complete airtime purchase"
 
             });
 
@@ -1572,12 +1758,6 @@ app.post(
                 "===================================="
             );
 
-            /*
-            ========================================
-            INPUT
-            ========================================
-            */
-
             const uid =
                 String(
                     req.body.uid || ""
@@ -1596,14 +1776,13 @@ app.post(
             const meterType =
                 String(
                     req.body.meter_type || ""
-                )
-                    .toLowerCase()
-                    .trim();
+                ).trim();
 
             const amount =
                 Number(
                     req.body.amount
                 );
+
 
             /*
             ========================================
@@ -1615,7 +1794,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "UID is required"
@@ -1628,7 +1808,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Electricity provider is required"
@@ -1641,7 +1822,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Meter number is required"
@@ -1650,17 +1832,15 @@ app.post(
 
             }
 
-            if (
-                meterType !== "prepaid" &&
-                meterType !== "postpaid"
-            ) {
+            if (!meterType) {
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
-                        "Meter type must be prepaid or postpaid"
+                        "Meter type is required"
 
                 });
 
@@ -1673,7 +1853,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Invalid electricity amount"
@@ -1681,6 +1862,51 @@ app.post(
                 });
 
             }
+
+
+            /*
+            ========================================
+            METER TYPE
+            ========================================
+            */
+
+            const normalizedMeterType =
+                meterType
+                    .toLowerCase()
+                    .trim();
+
+            let variationCode = null;
+
+            if (
+                normalizedMeterType ===
+                "prepaid"
+            ) {
+
+                variationCode =
+                    "prepaid";
+
+            } else if (
+                normalizedMeterType ===
+                "postpaid"
+            ) {
+
+                variationCode =
+                    "postpaid";
+
+            } else {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Invalid meter type. Use Prepaid or Postpaid."
+
+                });
+
+            }
+
 
             /*
             ========================================
@@ -1692,7 +1918,8 @@ app.post(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Firebase is not initialized"
@@ -1701,9 +1928,10 @@ app.post(
 
             }
 
+
             /*
             ========================================
-            VTpass KEYS
+            VTPASS KEYS
             ========================================
             */
 
@@ -1713,7 +1941,8 @@ app.post(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "VTPASS_API_KEY is not configured"
@@ -1728,7 +1957,8 @@ app.post(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "VTPASS_SECRET_KEY is not configured"
@@ -1736,6 +1966,7 @@ app.post(
                 });
 
             }
+
 
             /*
             ========================================
@@ -1752,7 +1983,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Unsupported electricity provider",
@@ -1763,6 +1995,7 @@ app.post(
                 });
 
             }
+
 
             /*
             ========================================
@@ -1782,7 +2015,8 @@ app.post(
 
                 return res.status(404).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "User account not found. Please login again."
@@ -1799,6 +2033,7 @@ app.post(
                     userData.walletBalance || 0
                 );
 
+
             /*
             ========================================
             WALLET CHECK
@@ -1811,7 +2046,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Insufficient wallet balance",
@@ -1826,6 +2062,7 @@ app.post(
 
             }
 
+
             /*
             ========================================
             REQUEST ID
@@ -1833,11 +2070,17 @@ app.post(
             */
 
             const requestId =
-                generateRequestId();
+                "IDD-ELEC-" +
+                Date.now() +
+                "-" +
+                Math.floor(
+                    Math.random() * 100000
+                );
+
 
             /*
             ========================================
-            VTPASS PAYLOAD
+            VTPASS ELECTRICITY PAYLOAD
             ========================================
             */
 
@@ -1853,21 +2096,23 @@ app.post(
                     meterNumber,
 
                 variation_code:
-                    meterType,
+                    variationCode,
 
                 amount:
                     amount,
 
                 phone:
                     userData.phone ||
-                    "08011111111"
+                    meterNumber
 
             };
+
 
             console.log(
                 "VTpass ELECTRICITY payload:",
                 vtpassPayload
             );
+
 
             /*
             ========================================
@@ -1907,8 +2152,10 @@ app.post(
 
                 );
 
+
             const vtpassData =
                 vtpassResponse.data || {};
+
 
             console.log(
                 "VTpass ELECTRICITY response:",
@@ -1918,6 +2165,7 @@ app.post(
                     2
                 )
             );
+
 
             /*
             ========================================
@@ -1935,6 +2183,7 @@ app.post(
                     .response_description ||
                 "";
 
+
             /*
             ========================================
             FAILED
@@ -1947,7 +2196,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         responseDescription ||
@@ -1966,6 +2216,7 @@ app.post(
 
             }
 
+
             /*
             ========================================
             TRANSACTION
@@ -1979,11 +2230,13 @@ app.post(
                     )
                     .doc();
 
-            let newBalance = 0;
+            let newBalance =
+                0;
+
 
             /*
             ========================================
-            DEDUCT WALLET + SAVE
+            DEDUCT WALLET
             ========================================
             */
 
@@ -1995,9 +2248,7 @@ app.post(
                             userRef
                         );
 
-                    if (
-                        !freshUser.exists
-                    ) {
+                    if (!freshUser.exists) {
 
                         throw new Error(
                             "User not found"
@@ -2028,6 +2279,7 @@ app.post(
                         freshBalance -
                         amount;
 
+
                     /*
                     --------------------------------
                     UPDATE WALLET
@@ -2052,6 +2304,7 @@ app.post(
 
                     );
 
+
                     /*
                     --------------------------------
                     SAVE TRANSACTION
@@ -2070,6 +2323,9 @@ app.post(
                             type:
                                 "electricity_purchase",
 
+                            service:
+                                "electricity",
+
                             disco:
                                 disco,
 
@@ -2080,7 +2336,10 @@ app.post(
                                 meterNumber,
 
                             meterType:
-                                meterType,
+                                normalizedMeterType,
+
+                            variationCode:
+                                variationCode,
 
                             amount:
                                 amount,
@@ -2093,21 +2352,6 @@ app.post(
 
                             responseDescription:
                                 responseDescription,
-
-                            customerName:
-                                vtpassData.customerName ||
-                                null,
-
-                            customerAddress:
-                                vtpassData.customerAddress ||
-                                null,
-
-                            token:
-                                vtpassData.purchased_code ||
-                                vtpassData.content
-                                    ?.transactions
-                                    ?.token ||
-                                null,
 
                             status:
                                 "successful",
@@ -2124,26 +2368,28 @@ app.post(
                 }
             );
 
+
             /*
             ========================================
-            SUCCESS RESPONSE
+            SUCCESS
             ========================================
             */
 
-            const token =
-                vtpassData.purchased_code ||
-                vtpassData.content
-                    ?.transactions
-                    ?.token ||
-                "";
-
             console.log(
-                "ELECTRICITY PURCHASE SUCCESSFUL"
+                "ELECTRICITY PAYMENT SUCCESSFUL"
             );
+
+
+            /*
+            ========================================
+            RETURN
+            ========================================
+            */
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 message:
                     "Electricity payment successful",
@@ -2164,24 +2410,13 @@ app.post(
                     meterNumber,
 
                 meterType:
-                    meterType,
+                    normalizedMeterType,
 
                 amount:
                     amount,
 
                 walletBalance:
                     newBalance,
-
-                token:
-                    token,
-
-                customerName:
-                    vtpassData.customerName ||
-                    null,
-
-                customerAddress:
-                    vtpassData.customerAddress ||
-                    null,
 
                 vtpass:
                     vtpassData
@@ -2196,6 +2431,7 @@ app.post(
                 error.message
             );
 
+
             if (
                 error.response
             ) {
@@ -2205,7 +2441,8 @@ app.post(
                     500
                 ).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         error.response
@@ -2231,9 +2468,11 @@ app.post(
 
             }
 
+
             return res.status(500).json({
 
-                success: false,
+                success:
+                    false,
 
                 message:
                     error.message ||
@@ -2282,7 +2521,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Email, amount and uid are required"
@@ -2295,7 +2535,8 @@ app.post(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Firebase is not initialized"
@@ -2310,7 +2551,8 @@ app.post(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "PAYSTACK_SECRET_KEY is not configured"
@@ -2323,7 +2565,8 @@ app.post(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Minimum payment is ₦100"
@@ -2426,7 +2669,8 @@ app.post(
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 data: {
 
@@ -2456,7 +2700,8 @@ app.post(
 
             return res.status(500).json({
 
-                success: false,
+                success:
+                    false,
 
                 message:
                     "Unable to initialize payment"
@@ -2490,7 +2735,8 @@ app.get(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Transaction reference is required"
@@ -2503,7 +2749,8 @@ app.get(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Firebase is not initialized"
@@ -2518,7 +2765,8 @@ app.get(
 
                 return res.status(500).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "PAYSTACK_SECRET_KEY is not configured"
@@ -2546,7 +2794,8 @@ app.get(
 
                 return res.status(404).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Transaction not found"
@@ -2568,7 +2817,8 @@ app.get(
 
                 return res.json({
 
-                    success: true,
+                    success:
+                        true,
 
                     message:
                         "Payment already processed",
@@ -2627,7 +2877,8 @@ app.get(
 
                 return res.json({
 
-                    success: false,
+                    success:
+                        false,
 
                     status:
                         payment.status,
@@ -2646,7 +2897,8 @@ app.get(
 
                 return res.status(400).json({
 
-                    success: false,
+                    success:
+                        false,
 
                     message:
                         "Payment amount does not match"
@@ -2759,7 +3011,8 @@ app.get(
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 message:
                     "Payment verified and wallet funded successfully",
@@ -2792,7 +3045,8 @@ app.get(
 
             return res.status(500).json({
 
-                success: false,
+                success:
+                    false,
 
                 message:
                     "Unable to verify payment",
