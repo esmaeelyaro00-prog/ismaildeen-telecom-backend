@@ -178,6 +178,55 @@ function getElectricityServiceId(disco) {
 
 /*
 =====================================================
+CABLE TV SERVICE ID
+=====================================================
+*/
+
+function getCableServiceId(provider) {
+
+    const serviceMap = {
+
+        dstv:
+            "dstv",
+
+        "dStv":
+            "dstv",
+
+        gotv:
+            "gotv",
+
+        "go tv":
+            "gotv",
+
+        "go-tv":
+            "gotv",
+
+        startimes:
+            "startimes",
+
+        "star times":
+            "startimes",
+
+        "star-times":
+            "startimes"
+
+    };
+
+    if (!provider) {
+        return null;
+    }
+
+    const normalized =
+        String(provider)
+            .toLowerCase()
+            .trim();
+
+    return serviceMap[normalized] || null;
+}
+
+
+/*
+=====================================================
 HOME
 =====================================================
 */
@@ -706,8 +755,7 @@ app.post(
             if (!uid) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "UID is required"
                 });
@@ -717,8 +765,7 @@ app.post(
             if (!network) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Network is required"
                 });
@@ -728,8 +775,7 @@ app.post(
             if (!phone) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Phone number is required"
                 });
@@ -739,8 +785,7 @@ app.post(
             if (!variationCode) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Variation code is required"
                 });
@@ -753,8 +798,7 @@ app.post(
             ) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Invalid amount"
                 });
@@ -762,18 +806,14 @@ app.post(
             }
 
             const cleanPhone =
-                phone.replace(
-                    /\D/g,
-                    ""
-                );
+                phone.replace(/\D/g, "");
 
             if (
                 cleanPhone.length !== 11
             ) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Phone number must be 11 digits"
                 });
@@ -783,8 +823,7 @@ app.post(
             if (!db) {
 
                 return res.status(500).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Firebase is not initialized"
                 });
@@ -794,8 +833,7 @@ app.post(
             if (!process.env.VTPASS_API_KEY) {
 
                 return res.status(500).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "VTPASS_API_KEY is not configured"
                 });
@@ -805,8 +843,7 @@ app.post(
             if (!process.env.VTPASS_SECRET_KEY) {
 
                 return res.status(500).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "VTPASS_SECRET_KEY is not configured"
                 });
@@ -819,8 +856,7 @@ app.post(
             if (!serviceID) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Unsupported network",
                     network:
@@ -840,8 +876,7 @@ app.post(
             if (!userSnapshot.exists) {
 
                 return res.status(404).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "User account not found. Please login again."
                 });
@@ -862,8 +897,7 @@ app.post(
 
                 return res.status(400).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         "Insufficient wallet balance",
@@ -973,8 +1007,7 @@ app.post(
 
                 return res.status(400).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         responseDescription ||
@@ -995,9 +1028,7 @@ app.post(
 
             const transactionRef =
                 db
-                    .collection(
-                        "transactions"
-                    )
+                    .collection("transactions")
                     .doc();
 
             let newBalance =
@@ -1012,11 +1043,9 @@ app.post(
                         );
 
                     if (!freshUser.exists) {
-
                         throw new Error(
                             "User not found"
                         );
-
                     }
 
                     const freshData =
@@ -1031,23 +1060,17 @@ app.post(
                     if (
                         freshBalance < amount
                     ) {
-
                         throw new Error(
                             "Insufficient wallet balance"
                         );
-
                     }
 
                     newBalance =
-                        freshBalance -
-                        amount;
+                        freshBalance - amount;
 
                     transaction.update(
-
                         userRef,
-
                         {
-
                             walletBalance:
                                 newBalance,
 
@@ -1055,15 +1078,11 @@ app.post(
                                 admin.firestore
                                     .FieldValue
                                     .serverTimestamp()
-
                         }
-
                     );
 
                     transaction.set(
-
                         transactionRef,
-
                         {
 
                             userId:
@@ -1105,7 +1124,6 @@ app.post(
                                     .serverTimestamp()
 
                         }
-
                     );
 
                 }
@@ -1113,8 +1131,7 @@ app.post(
 
             return res.json({
 
-                success:
-                    true,
+                success: true,
 
                 message:
                     "Data purchase successful",
@@ -1156,8 +1173,7 @@ app.post(
                     error.response.status || 500
                 ).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         error.response
@@ -1185,8 +1201,7 @@ app.post(
 
             return res.status(500).json({
 
-                success:
-                    false,
+                success: false,
 
                 message:
                     error.message ||
@@ -1213,19 +1228,8 @@ app.post(
         try {
 
             console.log(
-                "===================================="
-            );
-
-            console.log(
-                "BUY AIRTIME REQUEST"
-            );
-
-            console.log(
+                "BUY AIRTIME REQUEST:",
                 req.body
-            );
-
-            console.log(
-                "===================================="
             );
 
             const uid =
@@ -1253,8 +1257,7 @@ app.post(
             if (!uid) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "UID is required"
                 });
@@ -1264,8 +1267,7 @@ app.post(
             if (!network) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Network is required"
                 });
@@ -1275,8 +1277,7 @@ app.post(
             if (!phone) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Phone number is required"
                 });
@@ -1289,8 +1290,7 @@ app.post(
             ) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Invalid airtime amount"
                 });
@@ -1298,18 +1298,14 @@ app.post(
             }
 
             const cleanPhone =
-                phone.replace(
-                    /\D/g,
-                    ""
-                );
+                phone.replace(/\D/g, "");
 
             if (
                 cleanPhone.length !== 11
             ) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Phone number must be 11 digits"
                 });
@@ -1319,8 +1315,7 @@ app.post(
             if (!db) {
 
                 return res.status(500).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Firebase is not initialized"
                 });
@@ -1330,8 +1325,7 @@ app.post(
             if (!process.env.VTPASS_API_KEY) {
 
                 return res.status(500).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "VTPASS_API_KEY is not configured"
                 });
@@ -1341,8 +1335,7 @@ app.post(
             if (!process.env.VTPASS_SECRET_KEY) {
 
                 return res.status(500).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "VTPASS_SECRET_KEY is not configured"
                 });
@@ -1350,15 +1343,12 @@ app.post(
             }
 
             const serviceID =
-                getAirtimeServiceId(
-                    network
-                );
+                getAirtimeServiceId(network);
 
             if (!serviceID) {
 
                 return res.status(400).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "Unsupported network",
                     network:
@@ -1378,8 +1368,7 @@ app.post(
             if (!userSnapshot.exists) {
 
                 return res.status(404).json({
-                    success:
-                        false,
+                    success: false,
                     message:
                         "User account not found. Please login again."
                 });
@@ -1400,8 +1389,7 @@ app.post(
 
                 return res.status(400).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         "Insufficient wallet balance",
@@ -1439,11 +1427,6 @@ app.post(
                     cleanPhone
 
             };
-
-            console.log(
-                "VTpass AIRTIME payload:",
-                vtpassPayload
-            );
 
             const vtpassResponse =
                 await axios.post(
@@ -1505,8 +1488,7 @@ app.post(
 
                 return res.status(400).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         responseDescription ||
@@ -1527,9 +1509,7 @@ app.post(
 
             const transactionRef =
                 db
-                    .collection(
-                        "transactions"
-                    )
+                    .collection("transactions")
                     .doc();
 
             let newBalance =
@@ -1544,11 +1524,9 @@ app.post(
                         );
 
                     if (!freshUser.exists) {
-
                         throw new Error(
                             "User not found"
                         );
-
                     }
 
                     const freshData =
@@ -1563,21 +1541,16 @@ app.post(
                     if (
                         freshBalance < amount
                     ) {
-
                         throw new Error(
                             "Insufficient wallet balance"
                         );
-
                     }
 
                     newBalance =
-                        freshBalance -
-                        amount;
+                        freshBalance - amount;
 
                     transaction.update(
-
                         userRef,
-
                         {
 
                             walletBalance:
@@ -1589,13 +1562,10 @@ app.post(
                                     .serverTimestamp()
 
                         }
-
                     );
 
                     transaction.set(
-
                         transactionRef,
-
                         {
 
                             userId:
@@ -1634,7 +1604,6 @@ app.post(
                                     .serverTimestamp()
 
                         }
-
                     );
 
                 }
@@ -1642,8 +1611,7 @@ app.post(
 
             return res.json({
 
-                success:
-                    true,
+                success: true,
 
                 message:
                     "Airtime purchase successful",
@@ -1686,8 +1654,7 @@ app.post(
                     500
                 ).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         error.response
@@ -1715,8 +1682,7 @@ app.post(
 
             return res.status(500).json({
 
-                success:
-                    false,
+                success: false,
 
                 message:
                     error.message ||
@@ -1743,19 +1709,8 @@ app.post(
         try {
 
             console.log(
-                "===================================="
-            );
-
-            console.log(
-                "BUY ELECTRICITY REQUEST"
-            );
-
-            console.log(
+                "BUY ELECTRICITY REQUEST:",
                 req.body
-            );
-
-            console.log(
-                "===================================="
             );
 
             const uid =
@@ -1783,23 +1738,12 @@ app.post(
                     req.body.amount
                 );
 
-
-            /*
-            ========================================
-            VALIDATION
-            ========================================
-            */
-
             if (!uid) {
 
                 return res.status(400).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "UID is required"
-
                 });
 
             }
@@ -1807,13 +1751,9 @@ app.post(
             if (!disco) {
 
                 return res.status(400).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "Electricity provider is required"
-
                 });
 
             }
@@ -1821,13 +1761,9 @@ app.post(
             if (!meterNumber) {
 
                 return res.status(400).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "Meter number is required"
-
                 });
 
             }
@@ -1835,13 +1771,9 @@ app.post(
             if (!meterType) {
 
                 return res.status(400).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "Meter type is required"
-
                 });
 
             }
@@ -1852,23 +1784,12 @@ app.post(
             ) {
 
                 return res.status(400).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "Invalid electricity amount"
-
                 });
 
             }
-
-
-            /*
-            ========================================
-            METER TYPE
-            ========================================
-            */
 
             const normalizedMeterType =
                 meterType
@@ -1896,83 +1817,42 @@ app.post(
             } else {
 
                 return res.status(400).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "Invalid meter type. Use Prepaid or Postpaid."
-
                 });
 
             }
-
-
-            /*
-            ========================================
-            FIREBASE
-            ========================================
-            */
 
             if (!db) {
 
                 return res.status(500).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "Firebase is not initialized"
-
                 });
 
             }
 
-
-            /*
-            ========================================
-            VTPASS KEYS
-            ========================================
-            */
-
-            if (
-                !process.env.VTPASS_API_KEY
-            ) {
+            if (!process.env.VTPASS_API_KEY) {
 
                 return res.status(500).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "VTPASS_API_KEY is not configured"
-
                 });
 
             }
 
-            if (
-                !process.env.VTPASS_SECRET_KEY
-            ) {
+            if (!process.env.VTPASS_SECRET_KEY) {
 
                 return res.status(500).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "VTPASS_SECRET_KEY is not configured"
-
                 });
 
             }
-
-
-            /*
-            ========================================
-            SERVICE ID
-            ========================================
-            */
 
             const serviceID =
                 getElectricityServiceId(
@@ -1982,26 +1862,14 @@ app.post(
             if (!serviceID) {
 
                 return res.status(400).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "Unsupported electricity provider",
-
                     disco:
                         disco
-
                 });
 
             }
-
-
-            /*
-            ========================================
-            USER
-            ========================================
-            */
 
             const userRef =
                 db
@@ -2014,13 +1882,9 @@ app.post(
             if (!userSnapshot.exists) {
 
                 return res.status(404).json({
-
-                    success:
-                        false,
-
+                    success: false,
                     message:
                         "User account not found. Please login again."
-
                 });
 
             }
@@ -2033,21 +1897,13 @@ app.post(
                     userData.walletBalance || 0
                 );
 
-
-            /*
-            ========================================
-            WALLET CHECK
-            ========================================
-            */
-
             if (
                 walletBalance < amount
             ) {
 
                 return res.status(400).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         "Insufficient wallet balance",
@@ -2062,13 +1918,6 @@ app.post(
 
             }
 
-
-            /*
-            ========================================
-            REQUEST ID
-            ========================================
-            */
-
             const requestId =
                 "IDD-ELEC-" +
                 Date.now() +
@@ -2076,13 +1925,6 @@ app.post(
                 Math.floor(
                     Math.random() * 100000
                 );
-
-
-            /*
-            ========================================
-            VTPASS ELECTRICITY PAYLOAD
-            ========================================
-            */
 
             const vtpassPayload = {
 
@@ -2107,18 +1949,10 @@ app.post(
 
             };
 
-
             console.log(
                 "VTpass ELECTRICITY payload:",
                 vtpassPayload
             );
-
-
-            /*
-            ========================================
-            CALL VTPASS
-            ========================================
-            */
 
             const vtpassResponse =
                 await axios.post(
@@ -2152,10 +1986,8 @@ app.post(
 
                 );
 
-
             const vtpassData =
                 vtpassResponse.data || {};
-
 
             console.log(
                 "VTpass ELECTRICITY response:",
@@ -2165,13 +1997,6 @@ app.post(
                     2
                 )
             );
-
-
-            /*
-            ========================================
-            RESPONSE CODE
-            ========================================
-            */
 
             const vtpassCode =
                 String(
@@ -2183,21 +2008,13 @@ app.post(
                     .response_description ||
                 "";
 
-
-            /*
-            ========================================
-            FAILED
-            ========================================
-            */
-
             if (
                 vtpassCode !== "000"
             ) {
 
                 return res.status(400).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         responseDescription ||
@@ -2216,29 +2033,13 @@ app.post(
 
             }
 
-
-            /*
-            ========================================
-            TRANSACTION
-            ========================================
-            */
-
             const transactionRef =
                 db
-                    .collection(
-                        "transactions"
-                    )
+                    .collection("transactions")
                     .doc();
 
             let newBalance =
                 0;
-
-
-            /*
-            ========================================
-            DEDUCT WALLET
-            ========================================
-            */
 
             await db.runTransaction(
                 async (transaction) => {
@@ -2249,11 +2050,9 @@ app.post(
                         );
 
                     if (!freshUser.exists) {
-
                         throw new Error(
                             "User not found"
                         );
-
                     }
 
                     const freshData =
@@ -2268,28 +2067,16 @@ app.post(
                     if (
                         freshBalance < amount
                     ) {
-
                         throw new Error(
                             "Insufficient wallet balance"
                         );
-
                     }
 
                     newBalance =
-                        freshBalance -
-                        amount;
-
-
-                    /*
-                    --------------------------------
-                    UPDATE WALLET
-                    --------------------------------
-                    */
+                        freshBalance - amount;
 
                     transaction.update(
-
                         userRef,
-
                         {
 
                             walletBalance:
@@ -2301,20 +2088,10 @@ app.post(
                                     .serverTimestamp()
 
                         }
-
                     );
 
-
-                    /*
-                    --------------------------------
-                    SAVE TRANSACTION
-                    --------------------------------
-                    */
-
                     transaction.set(
-
                         transactionRef,
-
                         {
 
                             userId:
@@ -2362,34 +2139,14 @@ app.post(
                                     .serverTimestamp()
 
                         }
-
                     );
 
                 }
             );
 
-
-            /*
-            ========================================
-            SUCCESS
-            ========================================
-            */
-
-            console.log(
-                "ELECTRICITY PAYMENT SUCCESSFUL"
-            );
-
-
-            /*
-            ========================================
-            RETURN
-            ========================================
-            */
-
             return res.json({
 
-                success:
-                    true,
+                success: true,
 
                 message:
                     "Electricity payment successful",
@@ -2431,18 +2188,14 @@ app.post(
                 error.message
             );
 
-
-            if (
-                error.response
-            ) {
+            if (error.response) {
 
                 return res.status(
                     error.response.status ||
                     500
                 ).json({
 
-                    success:
-                        false,
+                    success: false,
 
                     message:
                         error.response
@@ -2468,6 +2221,463 @@ app.post(
 
             }
 
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    error.message ||
+                    "Unable to complete electricity payment"
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+=====================================================
+CABLE TV PLANS
+=====================================================
+*/
+
+app.get(
+    "/api/vtpass/cable-plans/:provider",
+    async (req, res) => {
+
+        try {
+
+            const provider =
+                String(
+                    req.params.provider || ""
+                )
+                    .toLowerCase()
+                    .trim();
+
+            const serviceID =
+                getCableServiceId(
+                    provider
+                );
+
+            if (!serviceID) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Unsupported cable TV provider",
+
+                    provider:
+                        provider
+
+                });
+
+            }
+
+            if (!process.env.VTPASS_API_KEY) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "VTPASS_API_KEY is not configured"
+
+                });
+
+            }
+
+            if (!process.env.VTPASS_SECRET_KEY) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+
+                });
+
+            }
+
+            console.log(
+                "Loading cable TV plans:",
+                serviceID
+            );
+
+            const response =
+                await axios.get(
+
+                    `${VTPASS_BASE_URL}/service-variations`,
+
+                    {
+
+                        params: {
+
+                            serviceID:
+                                serviceID
+
+                        },
+
+                        headers: {
+
+                            "api-key":
+                                process.env.VTPASS_API_KEY,
+
+                            "secret-key":
+                                process.env.VTPASS_SECRET_KEY,
+
+                            "Content-Type":
+                                "application/json",
+
+                            "Accept":
+                                "application/json"
+
+                        },
+
+                        timeout:
+                            30000
+
+                    }
+
+                );
+
+            const content =
+                response.data &&
+                response.data.content
+                    ? response.data.content
+                    : {};
+
+            const variations =
+                content.variations ||
+                content.varations ||
+                [];
+
+            const plans =
+                variations.map(
+                    (plan) => {
+
+                        return {
+
+                            variation_code:
+                                plan.variation_code,
+
+                            name:
+                                plan.name,
+
+                            amount:
+                                Number(
+                                    plan.variation_amount ||
+                                    plan.amount ||
+                                    0
+                                ),
+
+                            variation_amount:
+                                plan.variation_amount,
+
+                            fixedPrice:
+                                plan.fixedPrice
+
+                        };
+
+                    }
+                );
+
+            return res.json({
+
+                success:
+                    true,
+
+                provider:
+                    provider,
+
+                serviceID:
+                    serviceID,
+
+                plans:
+                    plans
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "CABLE PLANS ERROR:",
+                error.response?.data ||
+                error.message
+            );
+
+            return res.status(500).json({
+
+                success:
+                    false,
+
+                message:
+                    "Unable to load cable TV plans",
+
+                error:
+                    error.response?.data ||
+                    error.message
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+=====================================================
+VALIDATE CABLE TV SMARTCARD / IUC
+=====================================================
+*/
+
+app.post(
+    "/api/vtpass/validate-cable",
+    async (req, res) => {
+
+        try {
+
+            const provider =
+                String(
+                    req.body.provider || ""
+                )
+                    .toLowerCase()
+                    .trim();
+
+            const smartcard =
+                String(
+                    req.body.smartcard ||
+                    req.body.iuc ||
+                    req.body.billersCode ||
+                    ""
+                ).trim();
+
+            const serviceID =
+                getCableServiceId(
+                    provider
+                );
+
+            if (!serviceID) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Unsupported cable TV provider"
+
+                });
+
+            }
+
+            if (!smartcard) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Smartcard / IUC number is required"
+
+                });
+
+            }
+
+            if (!process.env.VTPASS_API_KEY) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "VTPASS_API_KEY is not configured"
+
+                });
+
+            }
+
+            if (!process.env.VTPASS_SECRET_KEY) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+
+                });
+
+            }
+
+            const payload = {
+
+                serviceID:
+                    serviceID,
+
+                billersCode:
+                    smartcard,
+
+                type:
+                    "customer"
+
+            };
+
+            console.log(
+                "CABLE VALIDATION REQUEST:",
+                payload
+            );
+
+            const response =
+                await axios.post(
+
+                    `${VTPASS_BASE_URL}/merchant-verify`,
+
+                    payload,
+
+                    {
+
+                        headers: {
+
+                            "api-key":
+                                process.env.VTPASS_API_KEY,
+
+                            "secret-key":
+                                process.env.VTPASS_SECRET_KEY,
+
+                            "Content-Type":
+                                "application/json",
+
+                            "Accept":
+                                "application/json"
+
+                        },
+
+                        timeout:
+                            30000
+
+                    }
+
+                );
+
+            const data =
+                response.data || {};
+
+            console.log(
+                "CABLE VALIDATION RESPONSE:",
+                JSON.stringify(
+                    data,
+                    null,
+                    2
+                )
+            );
+
+            const code =
+                String(
+                    data.code || ""
+                );
+
+            if (
+                code !== "000"
+            ) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        data.response_description ||
+                        "Unable to validate Smartcard / IUC",
+
+                    code:
+                        code || null,
+
+                    vtpass:
+                        data
+
+                });
+
+            }
+
+            return res.json({
+
+                success:
+                    true,
+
+                message:
+                    "Smartcard / IUC validated successfully",
+
+                provider:
+                    provider,
+
+                serviceID:
+                    serviceID,
+
+                smartcard:
+                    smartcard,
+
+                customer:
+                    data.content ||
+                    null,
+
+                vtpass:
+                    data
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "CABLE VALIDATION ERROR:",
+                error.response?.data ||
+                error.message
+            );
+
+            if (error.response) {
+
+                return res.status(
+                    error.response.status ||
+                    500
+                ).json({
+
+                    success:
+                        false,
+
+                    message:
+                        error.response
+                            .data
+                            ?.response_description ||
+                        error.response
+                            .data
+                            ?.message ||
+                        "Cable TV validation failed",
+
+                    code:
+                        error.response
+                            .data
+                            ?.code ||
+                        null,
+
+                    vtpass:
+                        error.response
+                            .data ||
+                        null
+
+                });
+
+            }
 
             return res.status(500).json({
 
@@ -2476,7 +2686,687 @@ app.post(
 
                 message:
                     error.message ||
-                    "Unable to complete electricity payment"
+                    "Unable to validate cable TV account"
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+=====================================================
+BUY CABLE TV
+=====================================================
+*/
+
+app.post(
+    "/api/vtpass/buy-cable",
+    async (req, res) => {
+
+        try {
+
+            console.log(
+                "===================================="
+            );
+
+            console.log(
+                "BUY CABLE TV REQUEST"
+            );
+
+            console.log(
+                req.body
+            );
+
+            console.log(
+                "===================================="
+            );
+
+            const uid =
+                String(
+                    req.body.uid || ""
+                ).trim();
+
+            const provider =
+                String(
+                    req.body.provider || ""
+                )
+                    .toLowerCase()
+                    .trim();
+
+            const smartcard =
+                String(
+                    req.body.smartcard ||
+                    req.body.iuc ||
+                    ""
+                ).trim();
+
+            const variationCode =
+                String(
+                    req.body.variation_code ||
+                    ""
+                ).trim();
+
+            const amount =
+                Number(
+                    req.body.amount
+                );
+
+            /*
+            ========================================
+            VALIDATION
+            ========================================
+            */
+
+            if (!uid) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "UID is required"
+
+                });
+
+            }
+
+            if (!provider) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Cable TV provider is required"
+
+                });
+
+            }
+
+            if (!smartcard) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Smartcard / IUC number is required"
+
+                });
+
+            }
+
+            if (!variationCode) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Cable TV plan is required"
+
+                });
+
+            }
+
+            if (
+                !Number.isFinite(amount) ||
+                amount <= 0
+            ) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Invalid cable TV amount"
+
+                });
+
+            }
+
+            /*
+            ========================================
+            FIREBASE
+            ========================================
+            */
+
+            if (!db) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Firebase is not initialized"
+
+                });
+
+            }
+
+            /*
+            ========================================
+            VTPASS KEYS
+            ========================================
+            */
+
+            if (
+                !process.env.VTPASS_API_KEY
+            ) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "VTPASS_API_KEY is not configured"
+
+                });
+
+            }
+
+            if (
+                !process.env.VTPASS_SECRET_KEY
+            ) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+
+                });
+
+            }
+
+            /*
+            ========================================
+            SERVICE ID
+            ========================================
+            */
+
+            const serviceID =
+                getCableServiceId(
+                    provider
+                );
+
+            if (!serviceID) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Unsupported cable TV provider",
+
+                    provider:
+                        provider
+
+                });
+
+            }
+
+            /*
+            ========================================
+            USER
+            ========================================
+            */
+
+            const userRef =
+                db
+                    .collection("users")
+                    .doc(uid);
+
+            const userSnapshot =
+                await userRef.get();
+
+            if (!userSnapshot.exists) {
+
+                return res.status(404).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "User account not found. Please login again."
+
+                });
+
+            }
+
+            const userData =
+                userSnapshot.data() || {};
+
+            /*
+            ========================================
+            WALLET
+            ========================================
+            */
+
+            const walletBalance =
+                Number(
+                    userData.walletBalance || 0
+                );
+
+            if (
+                walletBalance < amount
+            ) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        "Insufficient wallet balance",
+
+                    walletBalance:
+                        walletBalance,
+
+                    required:
+                        amount
+
+                });
+
+            }
+
+            /*
+            ========================================
+            REQUEST ID
+            ========================================
+            */
+
+            const requestId =
+                "IDD-CABLE-" +
+                Date.now() +
+                "-" +
+                Math.floor(
+                    Math.random() * 100000
+                );
+
+            /*
+            ========================================
+            VTPASS PAYLOAD
+            ========================================
+            */
+
+            const vtpassPayload = {
+
+                request_id:
+                    requestId,
+
+                serviceID:
+                    serviceID,
+
+                billersCode:
+                    smartcard,
+
+                variation_code:
+                    variationCode,
+
+                amount:
+                    amount,
+
+                phone:
+                    userData.phone ||
+                    "08000000000"
+
+            };
+
+            console.log(
+                "VTpass CABLE payload:",
+                vtpassPayload
+            );
+
+            /*
+            ========================================
+            CALL VTPASS
+            ========================================
+            */
+
+            const vtpassResponse =
+                await axios.post(
+
+                    `${VTPASS_BASE_URL}/pay`,
+
+                    vtpassPayload,
+
+                    {
+
+                        headers: {
+
+                            "api-key":
+                                process.env.VTPASS_API_KEY,
+
+                            "secret-key":
+                                process.env.VTPASS_SECRET_KEY,
+
+                            "Content-Type":
+                                "application/json",
+
+                            "Accept":
+                                "application/json"
+
+                        },
+
+                        timeout:
+                            60000
+
+                    }
+
+                );
+
+            const vtpassData =
+                vtpassResponse.data || {};
+
+            console.log(
+                "VTpass CABLE RESPONSE:",
+                JSON.stringify(
+                    vtpassData,
+                    null,
+                    2
+                )
+            );
+
+            const vtpassCode =
+                String(
+                    vtpassData.code || ""
+                );
+
+            const responseDescription =
+                vtpassData
+                    .response_description ||
+                "";
+
+            /*
+            ========================================
+            TRANSACTION FAILED
+            ========================================
+            */
+
+            if (
+                vtpassCode !== "000"
+            ) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    message:
+                        responseDescription ||
+                        "Cable TV subscription failed",
+
+                    code:
+                        vtpassCode || null,
+
+                    requestId:
+                        requestId,
+
+                    vtpass:
+                        vtpassData
+
+                });
+
+            }
+
+            /*
+            ========================================
+            SAVE TRANSACTION
+            ========================================
+            */
+
+            const transactionRef =
+                db
+                    .collection("transactions")
+                    .doc();
+
+            let newBalance =
+                0;
+
+            /*
+            ========================================
+            DEDUCT WALLET
+            ========================================
+            */
+
+            await db.runTransaction(
+                async (transaction) => {
+
+                    const freshUser =
+                        await transaction.get(
+                            userRef
+                        );
+
+                    if (!freshUser.exists) {
+
+                        throw new Error(
+                            "User not found"
+                        );
+
+                    }
+
+                    const freshData =
+                        freshUser.data() || {};
+
+                    const freshBalance =
+                        Number(
+                            freshData.walletBalance ||
+                            0
+                        );
+
+                    if (
+                        freshBalance < amount
+                    ) {
+
+                        throw new Error(
+                            "Insufficient wallet balance"
+                        );
+
+                    }
+
+                    newBalance =
+                        freshBalance -
+                        amount;
+
+                    /*
+                    --------------------------------
+                    UPDATE WALLET
+                    --------------------------------
+                    */
+
+                    transaction.update(
+
+                        userRef,
+
+                        {
+
+                            walletBalance:
+                                newBalance,
+
+                            updatedAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+                    /*
+                    --------------------------------
+                    SAVE TRANSACTION
+                    --------------------------------
+                    */
+
+                    transaction.set(
+
+                        transactionRef,
+
+                        {
+
+                            userId:
+                                uid,
+
+                            type:
+                                "cable_tv_purchase",
+
+                            service:
+                                "cable_tv",
+
+                            provider:
+                                provider,
+
+                            serviceID:
+                                serviceID,
+
+                            smartcard:
+                                smartcard,
+
+                            variationCode:
+                                variationCode,
+
+                            amount:
+                                amount,
+
+                            requestId:
+                                requestId,
+
+                            vtpassCode:
+                                vtpassCode,
+
+                            responseDescription:
+                                responseDescription,
+
+                            status:
+                                "successful",
+
+                            createdAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+                }
+            );
+
+            /*
+            ========================================
+            SUCCESS
+            ========================================
+            */
+
+            console.log(
+                "CABLE TV PAYMENT SUCCESSFUL"
+            );
+
+            return res.json({
+
+                success:
+                    true,
+
+                message:
+                    "Cable TV subscription successful",
+
+                transactionId:
+                    transactionRef.id,
+
+                requestId:
+                    requestId,
+
+                provider:
+                    provider,
+
+                serviceID:
+                    serviceID,
+
+                smartcard:
+                    smartcard,
+
+                variationCode:
+                    variationCode,
+
+                amount:
+                    amount,
+
+                walletBalance:
+                    newBalance,
+
+                vtpass:
+                    vtpassData
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "BUY CABLE ERROR:",
+                error.response?.data ||
+                error.message
+            );
+
+            if (
+                error.response
+            ) {
+
+                return res.status(
+
+                    error.response.status ||
+                    500
+
+                ).json({
+
+                    success:
+                        false,
+
+                    message:
+                        error.response
+                            .data
+                            ?.response_description ||
+                        error.response
+                            .data
+                            ?.message ||
+                        "VTpass cable TV transaction failed",
+
+                    code:
+                        error.response
+                            .data
+                            ?.code ||
+                        null,
+
+                    vtpass:
+                        error.response
+                            .data ||
+                        null
+
+                });
+
+            }
+
+            return res.status(500).json({
+
+                success:
+                    false,
+
+                message:
+                    error.message ||
+                    "Unable to complete cable TV subscription"
 
             });
 
