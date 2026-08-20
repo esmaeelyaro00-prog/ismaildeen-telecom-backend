@@ -69,18 +69,14 @@ HELPERS
 =====================================================
 */
 
-function getServiceId(network) {
+function getDataServiceId(network) {
 
     const serviceMap = {
 
         mtn: "mtn-data",
-
         airtel: "airtel-data",
-
         glo: "glo-data",
-
         "9mobile": "etisalat-data",
-
         etisalat: "etisalat-data"
 
     };
@@ -96,6 +92,32 @@ function getServiceId(network) {
 
     return serviceMap[normalized] || null;
 }
+
+
+function getAirtimeServiceId(network) {
+
+    const serviceMap = {
+
+        mtn: "mtn",
+        airtel: "airtel",
+        glo: "glo",
+        "9mobile": "etisalat",
+        etisalat: "etisalat"
+
+    };
+
+    if (!network) {
+        return null;
+    }
+
+    const normalized =
+        String(network)
+            .toLowerCase()
+            .trim();
+
+    return serviceMap[normalized] || null;
+}
+
 
 /*
 =====================================================
@@ -118,6 +140,7 @@ app.get("/", (req, res) => {
     });
 
 });
+
 
 /*
 =====================================================
@@ -151,6 +174,7 @@ app.get("/api/health", async (req, res) => {
     });
 
 });
+
 
 /*
 =====================================================
@@ -224,6 +248,7 @@ app.get(
     }
 );
 
+
 /*
 =====================================================
 PAYMENT TEST
@@ -245,6 +270,7 @@ app.get(
 
     }
 );
+
 
 /*
 =====================================================
@@ -272,8 +298,9 @@ app.get(
             }
 
             const uid =
-                String(req.params.uid || "")
-                    .trim();
+                String(
+                    req.params.uid || ""
+                ).trim();
 
             if (!uid) {
 
@@ -362,6 +389,7 @@ app.get(
     }
 );
 
+
 /*
 =====================================================
 VTpass DATA PLANS
@@ -382,7 +410,7 @@ app.get(
                     .trim();
 
             const serviceID =
-                getServiceId(network);
+                getDataServiceId(network);
 
             if (!serviceID) {
 
@@ -443,10 +471,8 @@ app.get(
                     {
 
                         params: {
-
                             serviceID:
                                 serviceID
-
                         },
 
                         headers: {
@@ -552,11 +578,10 @@ app.get(
     }
 );
 
+
 /*
 =====================================================
 BUY DATA
-IMPORTANT:
-ONLY ONE BUY-DATA ROUTE
 =====================================================
 */
 
@@ -582,12 +607,6 @@ app.post(
                 "===================================="
             );
 
-            /*
-            ========================================
-            GET REQUEST DATA
-            ========================================
-            */
-
             const uid =
                 String(
                     req.body.uid || ""
@@ -608,6 +627,533 @@ app.post(
             const variationCode =
                 String(
                     req.body.variation_code || ""
+                ).trim();
+
+            const amount =
+                Number(
+                    req.body.amount
+                );
+
+            if (!uid) {
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "UID is required"
+                });
+
+            }
+
+            if (!network) {
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Network is required"
+                });
+
+            }
+
+            if (!phone) {
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Phone number is required"
+                });
+
+            }
+
+            if (!variationCode) {
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Variation code is required"
+                });
+
+            }
+
+            if (
+                !Number.isFinite(amount) ||
+                amount <= 0
+            ) {
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Invalid amount"
+                });
+
+            }
+
+            const cleanPhone =
+                phone.replace(/\D/g, "");
+
+            if (
+                cleanPhone.length !== 11
+            ) {
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Phone number must be 11 digits"
+                });
+
+            }
+
+            if (!db) {
+
+                return res.status(500).json({
+                    success: false,
+                    message:
+                        "Firebase is not initialized"
+                });
+
+            }
+
+            if (!process.env.VTPASS_API_KEY) {
+
+                return res.status(500).json({
+                    success: false,
+                    message:
+                        "VTPASS_API_KEY is not configured"
+                });
+
+            }
+
+            if (!process.env.VTPASS_SECRET_KEY) {
+
+                return res.status(500).json({
+                    success: false,
+                    message:
+                        "VTPASS_SECRET_KEY is not configured"
+                });
+
+            }
+
+            const serviceID =
+                getDataServiceId(network);
+
+            if (!serviceID) {
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Unsupported network",
+                    network:
+                        network
+                });
+
+            }
+
+            const userRef =
+                db
+                    .collection("users")
+                    .doc(uid);
+
+            const userSnapshot =
+                await userRef.get();
+
+            if (!userSnapshot.exists) {
+
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        "User account not found. Please login again."
+                });
+
+            }
+
+            const userData =
+                userSnapshot.data() || {};
+
+            const walletBalance =
+                Number(
+                    userData.walletBalance || 0
+                );
+
+            if (
+                walletBalance < amount
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Insufficient wallet balance",
+
+                    walletBalance:
+                        walletBalance,
+
+                    required:
+                        amount
+
+                });
+
+            }
+
+            const requestId =
+                "IDD-" +
+                Date.now() +
+                "-" +
+                Math.floor(
+                    Math.random() * 100000
+                );
+
+            const vtpassPayload = {
+
+                request_id:
+                    requestId,
+
+                serviceID:
+                    serviceID,
+
+                billersCode:
+                    cleanPhone,
+
+                variation_code:
+                    variationCode,
+
+                amount:
+                    amount,
+
+                phone:
+                    cleanPhone
+
+            };
+
+            console.log(
+                "VTpass DATA payload:",
+                vtpassPayload
+            );
+
+            const vtpassResponse =
+                await axios.post(
+
+                    `${VTPASS_BASE_URL}/pay`,
+
+                    vtpassPayload,
+
+                    {
+
+                        headers: {
+
+                            "api-key":
+                                process.env.VTPASS_API_KEY,
+
+                            "secret-key":
+                                process.env.VTPASS_SECRET_KEY,
+
+                            "Content-Type":
+                                "application/json",
+
+                            "Accept":
+                                "application/json"
+
+                        },
+
+                        timeout:
+                            60000
+
+                    }
+
+                );
+
+            const vtpassData =
+                vtpassResponse.data || {};
+
+            console.log(
+                "VTpass DATA response:",
+                JSON.stringify(
+                    vtpassData,
+                    null,
+                    2
+                )
+            );
+
+            const vtpassCode =
+                String(
+                    vtpassData.code || ""
+                );
+
+            const responseDescription =
+                vtpassData
+                    .response_description ||
+                "";
+
+            if (
+                vtpassCode !== "000"
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        responseDescription ||
+                        "VTpass transaction failed",
+
+                    code:
+                        vtpassCode || null,
+
+                    requestId:
+                        requestId,
+
+                    vtpass:
+                        vtpassData
+
+                });
+
+            }
+
+            const transactionRef =
+                db
+                    .collection(
+                        "transactions"
+                    )
+                    .doc();
+
+            let newBalance = 0;
+
+            await db.runTransaction(
+                async (transaction) => {
+
+                    const freshUser =
+                        await transaction.get(
+                            userRef
+                        );
+
+                    if (!freshUser.exists) {
+
+                        throw new Error(
+                            "User not found"
+                        );
+
+                    }
+
+                    const freshData =
+                        freshUser.data() || {};
+
+                    const freshBalance =
+                        Number(
+                            freshData.walletBalance ||
+                            0
+                        );
+
+                    if (
+                        freshBalance < amount
+                    ) {
+
+                        throw new Error(
+                            "Insufficient wallet balance"
+                        );
+
+                    }
+
+                    newBalance =
+                        freshBalance -
+                        amount;
+
+                    transaction.update(
+
+                        userRef,
+
+                        {
+
+                            walletBalance:
+                                newBalance,
+
+                            updatedAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+                    transaction.set(
+
+                        transactionRef,
+
+                        {
+
+                            userId:
+                                uid,
+
+                            type:
+                                "data_purchase",
+
+                            network:
+                                network,
+
+                            phone:
+                                cleanPhone,
+
+                            variationCode:
+                                variationCode,
+
+                            amount:
+                                amount,
+
+                            serviceID:
+                                serviceID,
+
+                            requestId:
+                                requestId,
+
+                            vtpassCode:
+                                vtpassCode,
+
+                            responseDescription:
+                                responseDescription,
+
+                            status:
+                                "successful",
+
+                            createdAt:
+                                admin.firestore
+                                    .FieldValue
+                                    .serverTimestamp()
+
+                        }
+
+                    );
+
+                }
+            );
+
+            return res.json({
+
+                success: true,
+
+                message:
+                    "Data purchase successful",
+
+                transactionId:
+                    transactionRef.id,
+
+                requestId:
+                    requestId,
+
+                network:
+                    network,
+
+                phone:
+                    cleanPhone,
+
+                amount:
+                    amount,
+
+                walletBalance:
+                    newBalance,
+
+                vtpass:
+                    vtpassData
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "BUY DATA ERROR:",
+                error.response?.data ||
+                error.message
+            );
+
+            if (error.response) {
+
+                return res.status(
+                    error.response.status || 500
+                ).json({
+
+                    success: false,
+
+                    message:
+                        error.response
+                            .data
+                            ?.response_description ||
+                        error.response
+                            .data
+                            ?.message ||
+                        "VTpass transaction failed",
+
+                    code:
+                        error.response
+                            .data
+                            ?.code ||
+                        null,
+
+                    vtpass:
+                        error.response
+                            .data ||
+                        null
+
+                });
+
+            }
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    error.message ||
+                    "Unable to complete data purchase"
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+=====================================================
+BUY AIRTIME
+=====================================================
+*/
+
+app.post(
+    "/api/vtpass/buy-airtime",
+    async (req, res) => {
+
+        try {
+
+            console.log(
+                "===================================="
+            );
+
+            console.log(
+                "BUY AIRTIME REQUEST"
+            );
+
+            console.log(
+                req.body
+            );
+
+            console.log(
+                "===================================="
+            );
+
+            const uid =
+                String(
+                    req.body.uid || ""
+                ).trim();
+
+            const network =
+                String(
+                    req.body.network || ""
+                )
+                    .toLowerCase()
+                    .trim();
+
+            const phone =
+                String(
+                    req.body.phone || ""
                 ).trim();
 
             const amount =
@@ -660,19 +1206,6 @@ app.post(
 
             }
 
-            if (!variationCode) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Variation code is required"
-
-                });
-
-            }
-
             if (
                 !Number.isFinite(amount) ||
                 amount <= 0
@@ -683,7 +1216,7 @@ app.post(
                     success: false,
 
                     message:
-                        "Invalid amount"
+                        "Invalid airtime amount"
 
                 });
 
@@ -691,7 +1224,7 @@ app.post(
 
             /*
             ========================================
-            PHONE VALIDATION
+            PHONE
             ========================================
             */
 
@@ -718,7 +1251,7 @@ app.post(
 
             /*
             ========================================
-            FIREBASE CHECK
+            FIREBASE
             ========================================
             */
 
@@ -778,7 +1311,9 @@ app.post(
             */
 
             const serviceID =
-                getServiceId(network);
+                getAirtimeServiceId(
+                    network
+                );
 
             if (!serviceID) {
 
@@ -833,7 +1368,7 @@ app.post(
 
             /*
             ========================================
-            CHECK WALLET
+            WALLET CHECK
             ========================================
             */
 
@@ -875,7 +1410,7 @@ app.post(
 
             /*
             ========================================
-            VTpass REQUEST
+            VTPASS AIRTIME PAYLOAD
             ========================================
             */
 
@@ -887,12 +1422,6 @@ app.post(
                 serviceID:
                     serviceID,
 
-                billersCode:
-                    cleanPhone,
-
-                variation_code:
-                    variationCode,
-
                 amount:
                     amount,
 
@@ -902,13 +1431,13 @@ app.post(
             };
 
             console.log(
-                "VTpass payload:",
+                "VTpass AIRTIME payload:",
                 vtpassPayload
             );
 
             /*
             ========================================
-            CALL VTpass
+            CALL VTPASS
             ========================================
             */
 
@@ -947,17 +1476,8 @@ app.post(
             const vtpassData =
                 vtpassResponse.data || {};
 
-            /*
-            ========================================
-            LOG VTpass RESPONSE
-            ========================================
-            */
-
             console.log(
-                "VTpass response:"
-            );
-
-            console.log(
+                "VTpass AIRTIME response:",
                 JSON.stringify(
                     vtpassData,
                     null,
@@ -967,7 +1487,7 @@ app.post(
 
             /*
             ========================================
-            VTpass CODE
+            RESPONSE CODE
             ========================================
             */
 
@@ -983,7 +1503,7 @@ app.post(
 
             /*
             ========================================
-            SUCCESS
+            FAILED
             ========================================
             */
 
@@ -991,18 +1511,13 @@ app.post(
                 vtpassCode !== "000"
             ) {
 
-                console.error(
-                    "VTpass transaction failed:",
-                    responseDescription
-                );
-
                 return res.status(400).json({
 
                     success: false,
 
                     message:
                         responseDescription ||
-                        "VTpass transaction failed",
+                        "Airtime purchase failed",
 
                     code:
                         vtpassCode || null,
@@ -1019,7 +1534,7 @@ app.post(
 
             /*
             ========================================
-            TRANSACTION REFERENCE
+            TRANSACTION
             ========================================
             */
 
@@ -1030,22 +1545,16 @@ app.post(
                     )
                     .doc();
 
+            let newBalance = 0;
+
             /*
             ========================================
             DEDUCT WALLET + SAVE
             ========================================
             */
 
-            let newBalance = 0;
-
             await db.runTransaction(
                 async (transaction) => {
-
-                    /*
-                    --------------------------------
-                    GET FRESH USER
-                    --------------------------------
-                    */
 
                     const freshUser =
                         await transaction.get(
@@ -1071,12 +1580,6 @@ app.post(
                             0
                         );
 
-                    /*
-                    --------------------------------
-                    CHECK AGAIN
-                    --------------------------------
-                    */
-
                     if (
                         freshBalance < amount
                     ) {
@@ -1087,19 +1590,13 @@ app.post(
 
                     }
 
-                    /*
-                    --------------------------------
-                    NEW BALANCE
-                    --------------------------------
-                    */
-
                     newBalance =
                         freshBalance -
                         amount;
 
                     /*
                     --------------------------------
-                    UPDATE USER
+                    UPDATE WALLET
                     --------------------------------
                     */
 
@@ -1137,16 +1634,13 @@ app.post(
                                 uid,
 
                             type:
-                                "data_purchase",
+                                "airtime_purchase",
 
                             network:
                                 network,
 
                             phone:
                                 cleanPhone,
-
-                            variationCode:
-                                variationCode,
 
                             amount:
                                 amount,
@@ -1180,12 +1674,12 @@ app.post(
 
             /*
             ========================================
-            SUCCESS RESPONSE
+            SUCCESS
             ========================================
             */
 
             console.log(
-                "DATA PURCHASE SUCCESSFUL"
+                "AIRTIME PURCHASE SUCCESSFUL"
             );
 
             return res.json({
@@ -1193,7 +1687,7 @@ app.post(
                 success: true,
 
                 message:
-                    "Data purchase successful",
+                    "Airtime purchase successful",
 
                 transactionId:
                     transactionRef.id,
@@ -1220,26 +1714,11 @@ app.post(
 
         } catch (error) {
 
-            /*
-            ========================================
-            ERROR LOG
-            ========================================
-            */
-
             console.error(
-                "BUY DATA ERROR:"
-            );
-
-            console.error(
+                "BUY AIRTIME ERROR:",
                 error.response?.data ||
                 error.message
             );
-
-            /*
-            ========================================
-            AXIOS / VTpass ERROR
-            ========================================
-            */
 
             if (
                 error.response
@@ -1259,7 +1738,7 @@ app.post(
                         error.response
                             .data
                             ?.message ||
-                        "VTpass transaction failed",
+                        "VTpass airtime transaction failed",
 
                     code:
                         error.response
@@ -1276,19 +1755,13 @@ app.post(
 
             }
 
-            /*
-            ========================================
-            GENERAL ERROR
-            ========================================
-            */
-
             return res.status(500).json({
 
                 success: false,
 
                 message:
                     error.message ||
-                    "Unable to complete data purchase"
+                    "Unable to complete airtime purchase"
 
             });
 
@@ -1296,6 +1769,7 @@ app.post(
 
     }
 );
+
 
 /*
 =====================================================
@@ -1517,6 +1991,7 @@ app.post(
 
     }
 );
+
 
 /*
 =====================================================
@@ -1855,6 +2330,7 @@ app.get(
 
     }
 );
+
 
 /*
 =====================================================
