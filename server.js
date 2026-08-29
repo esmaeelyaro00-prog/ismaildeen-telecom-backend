@@ -1302,12 +1302,190 @@ app.get(
     }
 );
 
-
 /*
 =====================================================
 WALLET CHART
 =====================================================
 */
+
+app.get(
+    "/api/wallet/:uid/chart",
+    async (req, res) => {
+
+        try {
+
+            if (!checkFirebase(res)) {
+                return;
+            }
+
+            const uid =
+                cleanString(req.params.uid);
+
+            if (!uid) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "UID is required"
+
+                });
+
+            }
+
+            const snapshot =
+                await db
+                    .collection("walletHistory")
+                    .where(
+                        "userId",
+                        "==",
+                        uid
+                    )
+                    .get();
+
+            /*
+            Sort records in the server.
+            This avoids requiring a Firestore
+            composite index for the chart.
+            */
+
+            const history =
+                snapshot.docs.map(doc => {
+
+                    const data =
+                        doc.data() || {};
+
+                    let createdAt = null;
+
+                    if (
+                        data.createdAt &&
+                        typeof data.createdAt.toDate ===
+                        "function"
+                    ) {
+
+                        createdAt =
+                            data.createdAt
+                                .toDate()
+                                .toISOString();
+
+                    }
+
+                    return {
+
+                        id:
+                            doc.id,
+
+                        userId:
+                            data.userId || uid,
+
+                        balance:
+                            Number(
+                                data.balance || 0
+                            ),
+
+                        amount:
+                            Number(
+                                data.amount || 0
+                            ),
+
+                        type:
+                            data.type || null,
+
+                        service:
+                            data.service || null,
+
+                        createdAt
+
+                    };
+
+                });
+
+            /*
+            Sort from oldest to newest
+            for wallet balance chart.
+            */
+
+            history.sort((a, b) => {
+
+                const dateA =
+                    a.createdAt
+                        ? new Date(
+                            a.createdAt
+                        ).getTime()
+                        : 0;
+
+                const dateB =
+                    b.createdAt
+                        ? new Date(
+                            b.createdAt
+                        ).getTime()
+                        : 0;
+
+                return dateA - dateB;
+
+            });
+
+            const chart =
+                history.map(item => ({
+
+                    id:
+                        item.id,
+
+                    balance:
+                        item.balance,
+
+                    amount:
+                        item.amount,
+
+                    type:
+                        item.type,
+
+                    service:
+                        item.service,
+
+                    createdAt:
+                        item.createdAt
+
+                }));
+
+            res.json({
+
+                success: true,
+
+                uid,
+
+                total:
+                    chart.length,
+
+                chart
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Wallet chart error:",
+                error.message
+            );
+
+            res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to load wallet chart",
+
+                error:
+                    error.message
+
+            });
+
+        }
+
+    }
+);
+
 
 app.get(
     "/api/wallet/:uid/chart",
