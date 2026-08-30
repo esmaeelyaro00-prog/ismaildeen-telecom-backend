@@ -529,7 +529,87 @@ function formatFirestoreData(data) {
     return result;
 }
 
+/* =====================================================
+GET WALLET BALANCE
+===================================================== */
 
+app.get(
+    "/api/wallet/balance/:uid",
+
+    async (req, res) => {
+
+        try {
+
+            if (!checkFirebase(res)) {
+                return;
+            }
+
+            const uid =
+                cleanString(req.params.uid);
+
+
+            if (!uid) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "UID is required"
+
+                });
+
+            }
+
+
+            const {
+                userData
+            } =
+                await getUser(uid);
+
+
+            const balance =
+                toMoney(
+                    userData.walletBalance || 0
+                );
+
+
+            return res.json({
+
+                success: true,
+
+                uid,
+
+                balance,
+
+                walletBalance:
+                    balance
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "WALLET BALANCE ERROR:",
+                error.message
+            );
+
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    error.message ||
+                    "Unable to load wallet balance"
+
+            });
+
+        }
+
+    }
+);
 /*
 =====================================================
 WALLET HISTORY
