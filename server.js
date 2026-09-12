@@ -3329,7 +3329,196 @@ app.get(
         }
     }
 );
+/*
+=====================================================
+CUSTOMER SUPPORT
+TRANSACTION CHECK
 
+READ ONLY:
+This endpoint only checks a customer's transaction.
+It does NOT deduct or add money.
+=====================================================
+*/
+
+app.get(
+    "/api/support/transaction/:uid/:transactionId",
+    async (req, res) => {
+        try {
+            if (!checkFirebase(res)) {
+                return;
+            }
+
+            const uid =
+                cleanString(
+                    req.params.uid
+                );
+
+            const transactionId =
+                cleanString(
+                    req.params.transactionId
+                );
+
+            if (!uid || !transactionId) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "UID and transaction ID are required"
+                });
+            }
+
+            /*
+            =================================================
+            FIND TRANSACTION BY FIRESTORE DOCUMENT ID
+            =================================================
+            */
+
+            const transactionRef =
+                db
+                    .collection("transactions")
+                    .doc(transactionId);
+
+            const snapshot =
+                await transactionRef.get();
+
+            if (!snapshot.exists) {
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        "Transaction not found"
+                });
+            }
+
+            const transaction =
+                snapshot.data() || {};
+
+            /*
+            =================================================
+            SECURITY CHECK
+
+            Make sure this transaction belongs
+            to the logged-in customer.
+            =================================================
+            */
+
+            if (
+                cleanString(
+                    transaction.userId
+                ) !== uid
+            ) {
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        "Transaction not found"
+                });
+            }
+
+            const formatted =
+                formatFirestoreData(
+                    transaction
+                );
+
+            /*
+            =================================================
+            RETURN SAFE TRANSACTION INFORMATION
+            =================================================
+            */
+
+            return res.json({
+                success: true,
+
+                transaction: {
+                    id:
+                        snapshot.id,
+
+                    transactionId:
+                        snapshot.id,
+
+                    reference:
+                        formatted.reference ||
+                        formatted.requestId ||
+                        snapshot.id,
+
+                    requestId:
+                        formatted.requestId ||
+                        null,
+
+                    userId:
+                        uid,
+
+                    type:
+                        formatted.type ||
+                        null,
+
+                    service:
+                        formatted.service ||
+                        null,
+
+                    amount:
+                        toMoney(
+                            formatted.amount ||
+                            0
+                        ),
+
+                    status:
+                        formatted.status ||
+                        "unknown",
+
+                    createdAt:
+                        formatted.createdAt ||
+                        null,
+
+                    network:
+                        formatted.network ||
+                        null,
+
+                    phone:
+                        formatted.phone ||
+                        null,
+
+                    provider:
+                        formatted.provider ||
+                        null,
+
+                    disco:
+                        formatted.disco ||
+                        null,
+
+                    meterNumber:
+                        formatted.meterNumber ||
+                        null,
+
+                    meterType:
+                        formatted.meterType ||
+                        null,
+
+                    smartcard:
+                        formatted.smartcard ||
+                        null,
+
+                    planName:
+                        formatted.planName ||
+                        null,
+
+                    variationCode:
+                        formatted.variationCode ||
+                        null
+                }
+            });
+
+        } catch (error) {
+            console.error(
+                "TRANSACTION SUPPORT ERROR:",
+                error.message
+            );
+
+            return res.status(500).json({
+                success: false,
+                message:
+                    "Unable to check transaction"
+            });
+        }
+    }
+);
 
 /*
 =====================================================
