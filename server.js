@@ -3983,6 +3983,172 @@ app.get(
         }
 
     }
+    /*
+=====================================================
+WALLET FUNDING SUPPORT CHECK
+=====================================================
+READ ONLY:
+This endpoint only checks a wallet funding transaction.
+It does NOT credit the wallet and does NOT modify data.
+=====================================================
+*/
+
+app.get(
+    "/api/support/wallet-funding/:uid/:reference",
+
+    async (req, res) => {
+
+        try {
+
+            if (!checkFirebase(res)) {
+                return;
+            }
+
+            const uid =
+                cleanString(req.params.uid);
+
+            const reference =
+                cleanString(req.params.reference);
+
+            if (!uid || !reference) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "UID and transaction reference are required"
+
+                });
+
+            }
+
+            const snapshot =
+                await db
+                    .collection("walletTransactions")
+                    .where(
+                        "reference",
+                        "==",
+                        reference
+                    )
+                    .limit(1)
+                    .get();
+
+            /*
+            Do not reveal whether a reference exists
+            for another user's account.
+            */
+
+            if (snapshot.empty) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "Wallet funding transaction not found"
+
+                });
+
+            }
+
+            const doc =
+                snapshot.docs[0];
+
+            const transaction =
+                doc.data() || {};
+
+            /*
+            SECURITY CHECK:
+            The transaction must belong to
+            the UID supplied by the customer.
+            */
+
+            if (
+                cleanString(
+                    transaction.userId
+                ) !== uid
+            ) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "Wallet funding transaction not found"
+
+                });
+
+            }
+
+            const formatted =
+                formatFirestoreData(
+                    transaction
+                );
+
+            return res.json({
+
+                success: true,
+
+                transaction: {
+
+                    id: doc.id,
+
+                    reference:
+                        formatted.reference || reference,
+
+                    amount:
+                        toMoney(
+                            formatted.amount || 0
+                        ),
+
+                    status:
+                        formatted.status || "unknown",
+
+                    type:
+                        formatted.type ||
+                        "wallet_funding",
+
+                    fundingMethod:
+                        formatted.fundingMethod ||
+                        "online",
+
+                    createdAt:
+                        formatted.createdAt || null,
+
+                    verifiedAt:
+                        formatted.verifiedAt || null,
+
+                    paidAt:
+                        formatted.paidAt || null,
+
+                    paystackStatus:
+                        formatted.paystackStatus ||
+                        null
+
+                }
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "WALLET FUNDING SUPPORT ERROR:",
+                error.message
+            );
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to check wallet funding transaction"
+
+            });
+
+        }
+
+    }
 );
 
 
