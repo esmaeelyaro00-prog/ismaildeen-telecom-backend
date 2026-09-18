@@ -1,3 +1,9 @@
+// ============================================================
+// ISMAIL DEEN DATA - FULL SERVER.JS
+// Node.js + Express + Firebase Firestore
+// Paystack + VTpass + AI Customer Support
+// ============================================================
+
 require("dotenv").config();
 
 const express = require("express");
@@ -8,4661 +14,3315 @@ const crypto = require("crypto");
 
 const app = express();
 
-/*
-=====================================================
-CONFIG
-=====================================================
-*/
-
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = Number(process.env.PORT || 10000);
 
 const VTPASS_BASE_URL =
-    (process.env.VTPASS_BASE_URL ||
-        "https://sandbox.vtpass.com/api").replace(/\/$/, "");
+  process.env.VTPASS_BASE_URL || "https://sandbox.vtpass.com/api";
 
 const PAYSTACK_BASE_URL =
-    "https://api.paystack.co";
+  process.env.PAYSTACK_BASE_URL || "https://api.paystack.co";
 
-const MINIMUM_FUNDING_AMOUNT = 100;
+const OPENAI_BASE_URL =
+  process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+
+const OPENAI_MODEL =
+  process.env.OPENAI_MODEL || "gpt-5.6-luna";
+
+const MINIMUM_FUNDING_AMOUNT = Number(
+  process.env.MINIMUM_FUNDING_AMOUNT || 100
+);
+
+// ============================================================
+// BASIC MIDDLEWARE
+// ============================================================
 
 app.use(cors());
 
+app.set("trust proxy", 1);
 
-/*
-=====================================================
-HELPERS
-=====================================================
-*/
+// ============================================================
+// HELPERS
+// ============================================================
 
 function cleanString(value) {
-    return String(value || "").trim();
+  return String(value ?? "").trim();
 }
 
 function cleanPhone(value) {
-    return cleanString(value).replace(/\D/g, "");
+  return cleanString(value).replace(/\s+/g, "");
 }
 
 function isValidPhone(phone) {
-    return /^\d{11}$/.test(phone);
+  return /^(0\d{10}|234\d{10})$/.test(phone);
 }
 
 function isValidEmail(email) {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function toMoney(value) {
-    const amount = Number(value);
+  const number = Number(value);
 
-    if (!Number.isFinite(amount)) {
-        return 0;
-    }
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
 
-    return Number(amount.toFixed(2));
+  return Math.round(number * 100) / 100;
 }
 
 function generateRequestId(prefix = "IDD") {
-    return (
-        prefix +
-        "-" +
-        Date.now() +
-        "-" +
-        crypto.randomBytes(4).toString("hex")
-    );
+  return `${prefix}-${Date.now()}-${crypto
+    .randomBytes(5)
+    .toString("hex")}`;
 }
 
 function getErrorMessage(error) {
-    return (
-        error?.response?.data?.response_description ||
-        error?.response?.data?.message ||
-        error?.message ||
-        "An unexpected error occurred"
-    );
+  return (
+    error?.response?.data?.response_description ||
+    error?.response?.data?.message ||
+    error?.response?.data?.error ||
+    error?.message ||
+    "Unknown error"
+  );
 }
 
 function getVTPassErrorStatus(error) {
-    const status = Number(error?.response?.status);
-
-    if (
-        Number.isFinite(status) &&
-        status >= 400 &&
-        status <= 599
-    ) {
-        return status;
-    }
-
-    return 500;
+  return (
+    error?.response?.data?.code ||
+    error?.response?.data?.response_code ||
+    error?.response?.data?.content?.error ||
+    null
+  );
 }
 
+function normalizeSupportStatus(status) {
+  const value = cleanString(status).toLowerCase();
 
-/*
-=====================================================
-FIREBASE ADMIN
-=====================================================
-*/
+  if (!value) return "unknown";
+
+  if (
+    ["completed", "successful", "success", "successful_payment"].includes(
+      value
+    )
+  ) {
+    return "completed";
+  }
+
+  if (
+    ["pending", "processing", "provider_pending", "unknown"].includes(value)
+  ) {
+    return "pending";
+  }
+
+  if (["failed", "failure", "cancelled", "canceled"].includes(value)) {
+    return "failed";
+  }
+
+  return value;
+}
+
+function explainSupportStatus(status) {
+  const normalized = normalizeSupportStatus(status);
+
+  const explanations = {
+    completed: "The transaction was completed successfully.",
+    pending:
+      "The transaction is still pending or its final provider status has not yet been confirmed.",
+    failed: "The transaction failed and should not be treated as completed.",
+    unknown:
+      "The current status could not be confirmed from the available records.",
+  };
+
+  return (
+    explanations[normalized] ||
+    `The current transaction status is ${normalized}.`
+  );
+}
+
+function maskPhone(phone) {
+  const value = cleanString(phone);
+
+  if (value.length < 7) return value;
+
+  return `${value.slice(0, 3)}****${value.slice(-3)}`;
+}
+
+function maskEmail(email) {
+  const value = cleanString(email);
+
+  if (!value.includes("@")) return value;
+
+  const [name, domain] = value.split("@");
+
+  if (name.length <= 2) {
+    return `**@${domain}`;
+  }
+
+  return `${name.slice(0, 2)}***@${domain}`;
+}
+
+// ============================================================
+// FIREBASE
+// ============================================================
 
 let db = null;
 
 function initializeFirebase() {
-    try {
-        if (admin.apps.length) {
-            db = admin.firestore();
-            return;
-        }
+  if (admin.apps.length > 0) {
+    db = admin.firestore();
+    return;
+  }
 
-        if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-            const serviceAccount =
-                JSON.parse(
-                    process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-                );
+  let credential;
 
-            admin.initializeApp({
-                credential:
-                    admin.credential.cert(serviceAccount)
-            });
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    const serviceAccount = JSON.parse(
+      process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+    );
 
-            db = admin.firestore();
+    credential = admin.credential.cert(serviceAccount);
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+    credential = admin.credential.cert(
+      require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
+    );
+  } else {
+    const defaultPath =
+      "/etc/secrets/firebase-service-account.json";
 
-            console.log(
-                "Firebase initialized from environment"
-            );
+    credential = admin.credential.cert(require(defaultPath));
+  }
 
-            return;
-        }
+  admin.initializeApp({
+    credential,
+  });
 
-        const firebasePath =
-            process.env.FIREBASE_SERVICE_ACCOUNT_PATH ||
-            "/etc/secrets/firebase-service-account.json";
+  db = admin.firestore();
 
-        const serviceAccount =
-            require(firebasePath);
-
-        admin.initializeApp({
-            credential:
-                admin.credential.cert(serviceAccount)
-        });
-
-        db = admin.firestore();
-
-        console.log(
-            "Firebase Admin initialized successfully"
-        );
-
-    } catch (error) {
-        console.error(
-            "Firebase Admin initialization failed:",
-            error.message
-        );
-    }
+  console.log("Firebase Admin initialized successfully");
 }
 
 initializeFirebase();
 
+// ============================================================
+// FIREBASE AUTHENTICATION
+// ============================================================
 
-/*
-=====================================================
-HEADERS
-=====================================================
-*/
+async function requireFirebaseAuth(req, res, next) {
+  try {
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: "Firebase is not initialized",
+      });
+    }
+
+    const authHeader = req.headers.authorization || "";
+
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        message: "Authorization token is required",
+      });
+    }
+
+    const idToken = authHeader.substring(7).trim();
+
+    if (!idToken) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authorization token",
+      });
+    }
+
+    const decodedToken = await admin
+      .auth()
+      .verifyIdToken(idToken);
+
+    req.user = decodedToken;
+
+    next();
+  } catch (error) {
+    console.error("AUTH ERROR:", error);
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired Firebase authentication token",
+    });
+  }
+}
+
+function requireOwnUid(req, res, next) {
+  const requestedUid =
+    req.params.uid ||
+    req.body?.uid ||
+    req.query?.uid;
+
+  if (!requestedUid) {
+    return res.status(400).json({
+      success: false,
+      message: "User ID is required",
+    });
+  }
+
+  if (!req.user || req.user.uid !== requestedUid) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to access this account",
+    });
+  }
+
+  next();
+}
+
+// ============================================================
+// FIREBASE CHECK
+// ============================================================
+
+function checkFirebase(res) {
+  if (!db) {
+    res.status(503).json({
+      success: false,
+      message: "Firebase is not initialized",
+    });
+
+    return false;
+  }
+
+  return true;
+}
+
+// ============================================================
+// USER
+// ============================================================
+
+async function getUser(uid) {
+  if (!db) {
+    throw new Error("Firebase is not initialized");
+  }
+
+  const userRef = db.collection("users").doc(uid);
+  const snapshot = await userRef.get();
+
+  if (!snapshot.exists) {
+    return {
+      userRef,
+      userData: null,
+    };
+  }
+
+  return {
+    userRef,
+    userData: snapshot.data(),
+  };
+}
+
+// ============================================================
+// WALLET HISTORY
+// ============================================================
+
+async function saveWalletHistory(
+  transaction,
+  uid,
+  balance,
+  type,
+  amount,
+  extra = {}
+) {
+  const historyRef = db
+    .collection("walletHistory")
+    .doc();
+
+  await historyRef.set({
+    uid,
+    transactionId: transaction.id || null,
+    reference:
+      transaction.reference ||
+      transaction.requestId ||
+      null,
+    type,
+    amount: toMoney(amount),
+    balanceAfter: toMoney(balance),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...extra,
+  });
+
+  return historyRef.id;
+}
+
+// ============================================================
+// FIRESTORE FORMATTER
+// ============================================================
+
+function formatFirestoreData(data) {
+  if (!data || typeof data !== "object") {
+    return data;
+  }
+
+  const result = { ...data };
+
+  const dateFields = [
+    "createdAt",
+    "updatedAt",
+    "verifiedAt",
+    "paidAt",
+    "completedAt",
+    "failedAt",
+    "refundedAt",
+  ];
+
+  for (const field of dateFields) {
+    if (
+      result[field] &&
+      typeof result[field].toDate === "function"
+    ) {
+      result[field] = result[field].toDate().toISOString();
+    }
+  }
+
+  return result;
+}
+
+// ============================================================
+// API HEADERS
+// ============================================================
 
 function vtpassHeaders() {
-    return {
-        "api-key":
-            process.env.VTPASS_API_KEY,
-
-        "secret-key":
-            process.env.VTPASS_SECRET_KEY,
-
-        "Content-Type":
-            "application/json",
-
-        Accept:
-            "application/json"
-    };
+  return {
+    "Content-Type": "application/json",
+    "api-key": process.env.VTPASS_API_KEY,
+    "secret-key": process.env.VTPASS_SECRET_KEY,
+    "Public-Key": process.env.VTPASS_PUBLIC_KEY || "",
+  };
 }
 
 function paystackHeaders() {
-    return {
-        Authorization:
-            `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-
-        "Content-Type":
-            "application/json"
-    };
+  return {
+    Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+    "Content-Type": "application/json",
+  };
 }
 
+// ============================================================
+// API CHECKERS
+// ============================================================
 
-/*
-=====================================================
-CHECKERS
-=====================================================
-*/
-
-function checkFirebase(res) {
-    if (!db) {
-        res.status(500).json({
-            success: false,
-            message:
-                "Firebase is not initialized"
-        });
-
-        return false;
-    }
-
-    return true;
-}
-
-function checkVTPassKeys(res) {
-    if (
-        !process.env.VTPASS_API_KEY ||
-        !process.env.VTPASS_SECRET_KEY
-    ) {
-        res.status(500).json({
-            success: false,
-            message:
-                "VTpass credentials are not configured"
-        });
-
-        return false;
-    }
-
-    return true;
-}
-
-function checkPaystackKey(res) {
-    if (!process.env.PAYSTACK_SECRET_KEY) {
-        res.status(500).json({
-            success: false,
-            message:
-                "PAYSTACK_SECRET_KEY is not configured"
-        });
-
-        return false;
-    }
-
-    return true;
-}
-
-
-/*
-=====================================================
-FIRESTORE FORMATTER
-=====================================================
-*/
-
-function formatFirestoreData(data) {
-    const result = {
-        ...data
-    };
-
-    const timestampFields = [
-        "createdAt",
-        "updatedAt",
-        "verifiedAt",
-        "paidAt"
-    ];
-
-    timestampFields.forEach(field => {
-        if (
-            result[field] &&
-            typeof result[field].toDate === "function"
-        ) {
-            result[field] =
-                result[field]
-                    .toDate()
-                    .toISOString();
-        }
+function checkVTPassKeys(req, res, next) {
+  if (
+    !process.env.VTPASS_API_KEY ||
+    !process.env.VTPASS_SECRET_KEY
+  ) {
+    return res.status(503).json({
+      success: false,
+      message: "VTpass API keys are not configured",
     });
+  }
 
-    return result;
+  next();
 }
 
+function checkPaystackKey(req, res, next) {
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    return res.status(503).json({
+      success: false,
+      message: "Paystack secret key is not configured",
+    });
+  }
 
-/*
-=====================================================
-SERVICE ID HELPERS
-=====================================================
-*/
-
-function getDataServiceId(network) {
-    const serviceMap = {
-        mtn: "mtn-data",
-        airtel: "airtel-data",
-        glo: "glo-data",
-        "9mobile": "etisalat-data",
-        etisalat: "etisalat-data"
-    };
-
-    return (
-        serviceMap[
-            cleanString(network).toLowerCase()
-        ] || null
-    );
+  next();
 }
 
-function getAirtimeServiceId(network) {
-    const serviceMap = {
-        mtn: "mtn",
-        airtel: "airtel",
-        glo: "glo",
-        "9mobile": "etisalat",
-        etisalat: "etisalat"
-    };
+function checkAIKey(req, res, next) {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(503).json({
+      success: false,
+      message: "AI support is not configured",
+    });
+  }
 
-    return (
-        serviceMap[
-            cleanString(network).toLowerCase()
-        ] || null
-    );
+  next();
 }
 
-function getElectricityServiceId(disco) {
-    const normalized =
-        cleanString(disco).toLowerCase();
-
-    const serviceMap = {
-        abuja: "abuja-electric",
-        "abuja electricity distribution company":
-            "abuja-electric",
-
-        benin: "benin-electric",
-        "benin electricity distribution company":
-            "benin-electric",
-
-        eko: "eko-electric",
-        "eko electricity distribution company":
-            "eko-electric",
-
-        enugu: "enugu-electric",
-        "enugu electricity distribution company":
-            "enugu-electric",
-
-        ibadan: "ibadan-electric",
-        "ibadan electricity distribution company":
-            "ibadan-electric",
-
-        ikeja: "ikeja-electric",
-        "ikeja electricity distribution company":
-            "ikeja-electric",
-
-        jos: "jos-electric",
-        "jos electricity distribution company":
-            "jos-electric",
-
-        kaduna: "kaduna-electric",
-        "kaduna electricity distribution company":
-            "kaduna-electric",
-
-        kano: "kano-electric",
-        "kano electricity distribution company":
-            "kano-electric",
-
-        yola: "yola-electric",
-        "yola electricity distribution company":
-            "yola-electric"
-    };
-
-    return serviceMap[normalized] || null;
-}
-
-function getCableServiceId(provider) {
-    const normalized =
-        cleanString(provider).toLowerCase();
-
-    const serviceMap = {
-        dstv: "dstv",
-        gotv: "gotv",
-        "go tv": "gotv",
-        "go-tv": "gotv",
-        startimes: "startimes",
-        "star times": "startimes",
-        "star-times": "startimes"
-    };
-
-    return serviceMap[normalized] || null;
-}
-
-
-/*
-=====================================================
-GET USER
-=====================================================
-*/
-
-async function getUser(uid) {
-    const userRef =
-        db.collection("users").doc(uid);
-
-    const snapshot =
-        await userRef.get();
-
-    if (!snapshot.exists) {
-        throw new Error(
-            "User account not found"
-        );
-    }
-
-    return {
-        userRef,
-        userData:
-            snapshot.data() || {}
-    };
-}
-
-
-/*
-=====================================================
-WALLET HISTORY
-=====================================================
-*/
-
-function saveWalletHistory(
-    transaction,
-    uid,
-    balance,
-    type,
-    amount,
-    extra = {}
-) {
-    const historyRef =
-        db.collection("walletHistory").doc();
-
-    transaction.set(
-        historyRef,
-        {
-            userId: uid,
-
-            balance:
-                toMoney(balance),
-
-            amount:
-                toMoney(amount),
-
-            type,
-
-            ...extra,
-
-            createdAt:
-                admin.firestore
-                    .FieldValue
-                    .serverTimestamp()
-        }
-    );
-
-    return historyRef;
-}
-
-
-/*
-=====================================================
-PAYSTACK WEBHOOK
-=====================================================
-*/
-
-app.post(
-    "/api/payment/webhook",
-    express.raw({
-        type: "application/json"
-    }),
-    async (req, res) => {
-        try {
-            const signature =
-                req.headers["x-paystack-signature"];
-
-            const hash =
-                crypto
-                    .createHmac(
-                        "sha512",
-                        process.env.PAYSTACK_SECRET_KEY || ""
-                    )
-                    .update(req.body)
-                    .digest("hex");
-
-            if (
-                !signature ||
-                signature !== hash
-            ) {
-                return res
-                    .status(401)
-                    .send("Invalid signature");
-            }
-
-            const event =
-                JSON.parse(
-                    req.body.toString("utf8")
-                );
-
-            if (
-                event.event !== "charge.success" ||
-                !event.data?.reference
-            ) {
-                return res.sendStatus(200);
-            }
-
-            const reference =
-                cleanString(
-                    event.data.reference
-                );
-
-            await processSuccessfulPaystackPayment(
-                reference,
-                event.data
-            );
-
-            return res.sendStatus(200);
-
-        } catch (error) {
-            console.error(
-                "PAYSTACK WEBHOOK ERROR:",
-                error.message
-            );
-
-            return res.sendStatus(500);
-        }
-    }
-);
-
-
-/*
-=====================================================
-JSON BODY PARSER
-=====================================================
-*/
-
-app.use(
-    express.json({
-        limit: "1mb"
-    })
-);
-
-
-/*
-=====================================================
-WALLET BALANCE
-=====================================================
-*/
-
-app.get(
-    "/api/wallet/balance/:uid",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(
-                    req.params.uid
-                );
-
-            if (!uid) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID is required"
-                });
-            }
-
-            const {
-                userData
-            } = await getUser(uid);
-
-            const balance =
-                toMoney(
-                    userData.walletBalance || 0
-                );
-
-            return res.json({
-                success: true,
-                uid,
-                balance,
-                walletBalance:
-                    balance
-            });
-
-        } catch (error) {
-            console.error(
-                "WALLET BALANCE ERROR:",
-                error.message
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    error.message ||
-                    "Unable to load wallet balance"
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-GET WALLET
-=====================================================
-*/
-
-app.get(
-    "/api/wallet/:uid",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(
-                    req.params.uid
-                );
-
-            if (!uid) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID is required"
-                });
-            }
-
-            const {
-                userData
-            } = await getUser(uid);
-
-            return res.json({
-                success: true,
-                uid,
-                email:
-                    userData.email || null,
-                phone:
-                    userData.phone || null,
-                walletBalance:
-                    toMoney(
-                        userData.walletBalance
-                    )
-            });
-
-        } catch (error) {
-            return res.status(500).json({
-                success: false,
-                message:
-                    error.message
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-WALLET HISTORY
-=====================================================
-*/
-
-app.get(
-    "/api/wallet/:uid/history",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(
-                    req.params.uid
-                );
-
-            const limit =
-                Math.min(
-                    Math.max(
-                        Number(req.query.limit) || 100,
-                        1
-                    ),
-                    500
-                );
-
-            const snapshot =
-                await db
-                    .collection("walletHistory")
-                    .where(
-                        "userId",
-                        "==",
-                        uid
-                    )
-                    .orderBy(
-                        "createdAt",
-                        "desc"
-                    )
-                    .limit(limit)
-                    .get();
-
-            const history =
-                snapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...formatFirestoreData(
-                        doc.data() || {}
-                    )
-                }));
-
-            return res.json({
-                success: true,
-                uid,
-                history
-            });
-
-        } catch (error) {
-            console.error(
-                "WALLET HISTORY ERROR:",
-                error.message
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to load wallet history",
-                error:
-                    error.message
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-WALLET CHART
-=====================================================
-*/
-
-app.get(
-    "/api/wallet/:uid/chart",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(
-                    req.params.uid
-                );
-
-            if (!uid) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID is required"
-                });
-            }
-
-            const snapshot =
-                await db
-                    .collection("walletHistory")
-                    .where(
-                        "userId",
-                        "==",
-                        uid
-                    )
-                    .get();
-
-            const history =
-                snapshot.docs.map(doc => {
-                    const data =
-                        doc.data() || {};
-
-                    const formatted =
-                        formatFirestoreData(data);
-
-                    return {
-                        id: doc.id,
-
-                        userId:
-                            data.userId || uid,
-
-                        balance:
-                            toMoney(
-                                data.balance || 0
-                            ),
-
-                        amount:
-                            toMoney(
-                                data.amount || 0
-                            ),
-
-                        type:
-                            data.type || null,
-
-                        service:
-                            data.service || null,
-
-                        createdAt:
-                            formatted.createdAt ||
-                            null
-                    };
-                });
-
-            history.sort((a, b) => {
-                const dateA =
-                    a.createdAt
-                        ? new Date(
-                            a.createdAt
-                        ).getTime()
-                        : 0;
-
-                const dateB =
-                    b.createdAt
-                        ? new Date(
-                            b.createdAt
-                        ).getTime()
-                        : 0;
-
-                return dateA - dateB;
-            });
-
-            return res.json({
-                success: true,
-                uid,
-                total:
-                    history.length,
-                chart:
-                    history
-            });
-
-        } catch (error) {
-            console.error(
-                "WALLET CHART ERROR:",
-                error.message
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to load wallet chart",
-                error:
-                    error.message
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-GET TRANSACTIONS
-=====================================================
-*/
-
-app.get(
-    "/api/wallet/:uid/transactions",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(
-                    req.params.uid
-                );
-
-            const limit =
-                Math.min(
-                    Math.max(
-                        Number(req.query.limit) || 100,
-                        1
-                    ),
-                    500
-                );
-
-            const snapshot =
-                await db
-                    .collection("transactions")
-                    .where(
-                        "userId",
-                        "==",
-                        uid
-                    )
-                    .orderBy(
-                        "createdAt",
-                        "desc"
-                    )
-                    .limit(limit)
-                    .get();
-
-            const transactions =
-                snapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...formatFirestoreData(
-                        doc.data() || {}
-                    )
-                }));
-
-            return res.json({
-                success: true,
-                uid,
-                transactions
-            });
-
-        } catch (error) {
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to load transactions",
-                error:
-                    error.message
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-DATA PLAN PRICE
-=====================================================
-*/
-
-async function getDataPlanPrice(
-    serviceID,
-    variationCode
-) {
-    const response =
-        await axios.get(
-            `${VTPASS_BASE_URL}/service-variations`,
-            {
-                params: {
-                    serviceID
-                },
-
-                headers:
-                    vtpassHeaders(),
-
-                timeout:
-                    30000
-            }
-        );
-
-    const content =
-        response.data?.content || {};
-
-    const variations =
-        content.variations ||
-        content.varations ||
-        [];
-
-    const plan =
-        variations.find(item =>
-            String(
-                item.variation_code
-            ) ===
-            String(variationCode)
-        );
-
-    if (!plan) {
-        throw new Error(
-            "Selected data plan was not found"
-        );
-    }
-
-    const amount =
-        Number(
-            plan.variation_amount ||
-            plan.amount ||
-            0
-        );
-
-    if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-    ) {
-        throw new Error(
-            "Invalid data plan amount"
-        );
-    }
-
-    return {
-        amount:
-            toMoney(amount),
-
-        name:
-            plan.name || "",
-
-        variationCode:
-            plan.variation_code
-    };
-}
-
-
-/*
-=====================================================
-CABLE PLAN PRICE
-=====================================================
-*/
-
-async function getCablePlanPrice(
-    serviceID,
-    variationCode
-) {
-    const response =
-        await axios.get(
-            `${VTPASS_BASE_URL}/service-variations`,
-            {
-                params: {
-                    serviceID
-                },
-
-                headers:
-                    vtpassHeaders(),
-
-                timeout:
-                    30000
-            }
-        );
-
-    const content =
-        response.data?.content || {};
-
-    const variations =
-        content.variations ||
-        content.varations ||
-        [];
-
-    const plan =
-        variations.find(item =>
-            String(
-                item.variation_code
-            ) ===
-            String(variationCode)
-        );
-
-    if (!plan) {
-        throw new Error(
-            "Selected cable TV plan was not found"
-        );
-    }
-
-    const amount =
-        Number(
-            plan.variation_amount ||
-            plan.amount ||
-            0
-        );
-
-    if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-    ) {
-        throw new Error(
-            "Invalid cable TV plan amount"
-        );
-    }
-
-    return {
-        amount:
-            toMoney(amount),
-
-        name:
-            plan.name || ""
-    };
-}
-
-
-/*
-=====================================================
-PAYSTACK SUCCESS PROCESSOR
-=====================================================
-*/
+// ============================================================
+// SERVICE IDs
+// ============================================================
+
+const DATA_SERVICE_IDS = {
+  mtn: "mtn-data",
+  airtel: "airtel-data",
+  glo: "glo-data",
+  "9mobile": "etisalat-data",
+  etisalat: "etisalat-data",
+};
+
+const AIRTIME_SERVICE_IDS = {
+  mtn: "mtn",
+  airtel: "airtel",
+  glo: "glo",
+  "9mobile": "etisalat",
+  etisalat: "etisalat",
+};
+
+const ELECTRICITY_SERVICE_IDS = {
+  abuja: "abuja-electric",
+  benin: "benin-electric",
+  eko: "eko-electric",
+  enugu: "enugu-electric",
+  ibadan: "ibadan-electric",
+  ikeja: "ikeja-electric",
+  jos: "jos-electric",
+  kaduna: "kaduna-electric",
+  kano: "kano-electric",
+  yola: "yola-electric",
+};
+
+const CABLE_SERVICE_IDS = {
+  dstv: "dstv",
+  gotv: "gotv",
+  startimes: "startimes",
+};
+
+// ============================================================
+// PAYSTACK SUCCESS PROCESSOR
+// ============================================================
 
 async function processSuccessfulPaystackPayment(
-    reference,
-    payment
+  reference,
+  payment
 ) {
-    if (!db) {
-        throw new Error(
-            "Firebase is not initialized"
-        );
+  if (!db) {
+    throw new Error("Firebase is not initialized");
+  }
+
+  const snapshot = await db
+    .collection("walletTransactions")
+    .where("reference", "==", reference)
+    .limit(1)
+    .get();
+
+  if (snapshot.empty) {
+    throw new Error(
+      `Wallet funding transaction not found: ${reference}`
+    );
+  }
+
+  const transactionDoc = snapshot.docs[0];
+  const transactionRef = transactionDoc.ref;
+  const transaction = transactionDoc.data();
+
+  const uid = transaction.uid || transaction.userId;
+
+  if (!uid) {
+    throw new Error(
+      "Wallet funding transaction has no user ID"
+    );
+  }
+
+  const paidAmount = Number(payment.amount || 0) / 100;
+  const expectedAmount = Number(transaction.amount || 0);
+
+  if (Math.round(paidAmount * 100) !== Math.round(expectedAmount * 100)) {
+    throw new Error(
+      `Payment amount mismatch for ${reference}`
+    );
+  }
+
+  const currency = cleanString(
+    payment.currency || transaction.currency || "NGN"
+  ).toUpperCase();
+
+  if (currency !== "NGN") {
+    throw new Error("Only NGN wallet funding is supported");
+  }
+
+  return await db.runTransaction(async (firestoreTransaction) => {
+    const freshTransaction =
+      await firestoreTransaction.get(transactionRef);
+
+    const freshData = freshTransaction.data() || {};
+
+    if (freshData.status === "completed") {
+      const userRef = db.collection("users").doc(uid);
+      const userSnapshot =
+        await firestoreTransaction.get(userRef);
+
+      const currentUser = userSnapshot.data() || {};
+
+      return {
+        alreadyProcessed: true,
+        newBalance: Number(currentUser.walletBalance || 0),
+        amount: expectedAmount,
+        uid,
+      };
     }
 
-    const snapshot =
-        await db
-            .collection(
-                "walletTransactions"
-            )
-            .where(
-                "reference",
-                "==",
-                reference
-            )
-            .limit(1)
-            .get();
+    const userRef = db.collection("users").doc(uid);
 
-    if (snapshot.empty) {
-        throw new Error(
-            "Wallet transaction not found"
-        );
+    const userSnapshot =
+      await firestoreTransaction.get(userRef);
+
+    if (!userSnapshot.exists) {
+      throw new Error("User account not found");
     }
 
-    const transactionDoc =
-        snapshot.docs[0];
+    const userData = userSnapshot.data() || {};
 
-    const walletTransaction =
-        transactionDoc.data() || {};
+    const currentBalance = Number(
+      userData.walletBalance || 0
+    );
 
-    const uid =
-        cleanString(
-            walletTransaction.userId
-        );
+    const newBalance =
+      currentBalance + expectedAmount;
 
-    if (!uid) {
-        throw new Error(
-            "Wallet transaction has no user ID"
-        );
-    }
+    firestoreTransaction.update(userRef, {
+      walletBalance: newBalance,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
 
-    const expectedAmountKobo =
-        Number(
-            walletTransaction.amountKobo
-        );
+    firestoreTransaction.update(transactionRef, {
+      status: "completed",
+      fundingMethod: "online",
+      paystackStatus: payment.status || "success",
+      paystackReference: reference,
+      paidAt: admin.firestore.FieldValue.serverTimestamp(),
+      verifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
 
-    const paidAmountKobo =
-        Number(
-            payment.amount
-        );
+    const historyRef = db
+      .collection("walletHistory")
+      .doc(reference);
 
-    if (
-        !Number.isFinite(
-            paidAmountKobo
-        ) ||
-        paidAmountKobo !==
-            expectedAmountKobo
-    ) {
-        throw new Error(
-            "Payment amount does not match transaction"
-        );
-    }
-
-    if (
-        payment.currency &&
-        payment.currency !== "NGN"
-    ) {
-        throw new Error(
-            "Invalid payment currency"
-        );
-    }
-
-    const amount =
-        Number(
-            walletTransaction.amount
-        );
-
-    if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-    ) {
-        throw new Error(
-            "Invalid wallet funding amount"
-        );
-    }
-
-    const userRef =
-        db.collection("users").doc(uid);
-
-    let newBalance = 0;
-    let alreadyProcessed = false;
-
-    await db.runTransaction(
-        async firestoreTransaction => {
-            const transactionSnapshot =
-                await firestoreTransaction.get(
-                    transactionDoc.ref
-                );
-
-            if (!transactionSnapshot.exists) {
-                throw new Error(
-                    "Wallet transaction disappeared"
-                );
-            }
-
-            const currentTransaction =
-                transactionSnapshot.data() || {};
-
-            if (
-                currentTransaction.status ===
-                "completed"
-            ) {
-                alreadyProcessed = true;
-
-                const userSnapshot =
-                    await firestoreTransaction.get(
-                        userRef
-                    );
-
-                newBalance =
-                    userSnapshot.exists
-                        ? toMoney(
-                            userSnapshot
-                                .data()
-                                ?.walletBalance || 0
-                        )
-                        : 0;
-
-                return;
-            }
-
-            const userSnapshot =
-                await firestoreTransaction.get(
-                    userRef
-                );
-
-            if (!userSnapshot.exists) {
-                throw new Error(
-                    "User account not found"
-                );
-            }
-
-            const userData =
-                userSnapshot.data() || {};
-
-            const currentBalance =
-                Number(
-                    userData.walletBalance || 0
-                );
-
-            newBalance =
-                toMoney(
-                    currentBalance + amount
-                );
-
-            firestoreTransaction.set(
-                userRef,
-                {
-                    walletBalance:
-                        newBalance,
-
-                    updatedAt:
-                        admin.firestore
-                            .FieldValue
-                            .serverTimestamp()
-                },
-                {
-                    merge: true
-                }
-            );
-
-            firestoreTransaction.update(
-                transactionDoc.ref,
-                {
-                    status:
-                        "completed",
-
-                    fundingMethod:
-                        "online",
-
-                    paystackStatus:
-                        payment.status ||
-                        "success",
-
-                    paystackReference:
-                        reference,
-
-                    paidAt:
-                        payment.paid_at ||
-                        null,
-
-                    verifiedAt:
-                        admin.firestore
-                            .FieldValue
-                            .serverTimestamp()
-                }
-            );
-
-            saveWalletHistory(
-                firestoreTransaction,
-                uid,
-                newBalance,
-                "wallet_funding",
-                amount,
-                {
-                    service:
-                        "wallet",
-
-                    fundingMethod:
-                        "online",
-
-                    reference,
-
-                    transactionId:
-                        transactionDoc.id
-                }
-            );
-        }
+    firestoreTransaction.set(
+      historyRef,
+      {
+        uid,
+        transactionId: transactionRef.id,
+        reference,
+        type: "credit",
+        amount: expectedAmount,
+        balanceAfter: newBalance,
+        method: "paystack",
+        createdAt:
+          admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
     );
 
     return {
-        alreadyProcessed,
-        newBalance,
-        amount,
-        uid
+      alreadyProcessed: false,
+      newBalance,
+      amount: expectedAmount,
+      uid,
     };
+  });
 }
 
-
-/*
-=====================================================
-VTPASS DATA PLANS
-=====================================================
-*/
-
-app.get(
-    "/api/vtpass/data-plans/:network",
-    async (req, res) => {
-        try {
-            if (!checkVTPassKeys(res)) {
-                return;
-            }
-
-            const network =
-                cleanString(
-                    req.params.network
-                ).toLowerCase();
-
-            const serviceID =
-                getDataServiceId(network);
-
-            if (!serviceID) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Unsupported network"
-                });
-            }
-
-            const response =
-                await axios.get(
-                    `${VTPASS_BASE_URL}/service-variations`,
-                    {
-                        params: {
-                            serviceID
-                        },
-
-                        headers:
-                            vtpassHeaders(),
-
-                        timeout:
-                            30000
-                    }
-                );
-
-            const content =
-                response.data?.content ||
-                {};
-
-            const variations =
-                content.variations ||
-                content.varations ||
-                [];
-
-            const plans =
-                variations.map(plan => ({
-                    variation_code:
-                        plan.variation_code,
-
-                    name:
-                        plan.name,
-
-                    amount:
-                        toMoney(
-                            plan.variation_amount ||
-                            plan.amount
-                        ),
-
-                    fixedPrice:
-                        plan.fixedPrice ||
-                        null
-                }));
-
-            return res.json({
-                success: true,
-                network,
-                serviceID,
-                plans
-            });
-
-        } catch (error) {
-            return res.status(
-                getVTPassErrorStatus(error)
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-BUY DATA
-=====================================================
-*/
+// ============================================================
+// PAYSTACK WEBHOOK
+// IMPORTANT: RAW BODY MUST COME BEFORE express.json()
+// ============================================================
 
 app.post(
-    "/api/vtpass/buy-data",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            if (!checkVTPassKeys(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(req.body.uid);
-
-            const network =
-                cleanString(
-                    req.body.network
-                ).toLowerCase();
-
-            const phone =
-                cleanPhone(
-                    req.body.phone
-                );
-
-            const variationCode =
-                cleanString(
-                    req.body.variation_code
-                );
-
-            if (!uid) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID is required"
-                });
-            }
-
-            if (!isValidPhone(phone)) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Phone number must be 11 digits"
-                });
-            }
-
-            if (!variationCode) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Variation code is required"
-                });
-            }
-
-            const serviceID =
-                getDataServiceId(network);
-
-            if (!serviceID) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Unsupported network"
-                });
-            }
-
-            const plan =
-                await getDataPlanPrice(
-                    serviceID,
-                    variationCode
-                );
-
-            const amount =
-                plan.amount;
-
-            const {
-                userRef
-            } =
-                await getUser(uid);
-
-            const freshUser =
-                await userRef.get();
-
-            const balance =
-                toMoney(
-                    freshUser
-                        .data()
-                        ?.walletBalance
-                );
-
-            if (balance < amount) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Insufficient wallet balance",
-                    walletBalance:
-                        balance,
-                    required:
-                        amount
-                });
-            }
-
-            const requestId =
-                generateRequestId(
-                    "IDD-DATA"
-                );
-
-            const vtpassResponse =
-                await axios.post(
-                    `${VTPASS_BASE_URL}/pay`,
-                    {
-                        request_id:
-                            requestId,
-
-                        serviceID,
-
-                        billersCode:
-                            phone,
-
-                        variation_code:
-                            variationCode,
-
-                        amount,
-
-                        phone
-                    },
-                    {
-                        headers:
-                            vtpassHeaders(),
-
-                        timeout:
-                            60000
-                    }
-                );
-
-            const vtpassData =
-                vtpassResponse.data ||
-                {};
-
-            const code =
-                String(
-                    vtpassData.code || ""
-                );
-
-            if (code !== "000") {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        vtpassData
-                            .response_description ||
-                        "Data purchase failed",
-                    code,
-                    requestId
-                });
-            }
-
-            const transactionRef =
-                db
-                    .collection(
-                        "transactions"
-                    )
-                    .doc();
-
-            let newBalance = 0;
-
-            await db.runTransaction(
-                async transaction => {
-                    const snapshot =
-                        await transaction.get(
-                            userRef
-                        );
-
-                    if (!snapshot.exists) {
-                        throw new Error(
-                            "User account not found"
-                        );
-                    }
-
-                    const current =
-                        toMoney(
-                            snapshot
-                                .data()
-                                .walletBalance
-                        );
-
-                    if (current < amount) {
-                        throw new Error(
-                            "Wallet balance changed and is insufficient"
-                        );
-                    }
-
-                    newBalance =
-                        toMoney(
-                            current - amount
-                        );
-
-                    transaction.update(
-                        userRef,
-                        {
-                            walletBalance:
-                                newBalance,
-
-                            updatedAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-                        }
-                    );
-
-                    transaction.set(
-                        transactionRef,
-                        {
-                            userId:
-                                uid,
-
-                            type:
-                                "data_purchase",
-
-                            service:
-                                "data",
-
-                            network,
-
-                            phone,
-
-                            variationCode,
-
-                            planName:
-                                plan.name,
-
-                            serviceID,
-
-                            amount,
-
-                            requestId,
-
-                            vtpassCode:
-                                code,
-
-                            status:
-                                "successful",
-
-                            createdAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-                        }
-                    );
-
-                    saveWalletHistory(
-                        transaction,
-                        uid,
-                        newBalance,
-                        "data_purchase",
-                        -amount,
-                        {
-                            service:
-                                "data",
-
-                            network,
-
-                            phone,
-
-                            transactionId:
-                                transactionRef.id
-                        }
-                    );
-                }
-            );
-
-            return res.json({
-                success: true,
-
-                message:
-                    "Data purchase successful",
-
-                transactionId:
-                    transactionRef.id,
-
-                requestId,
-
-                amount,
-
-                walletBalance:
-                    newBalance
-            });
-
-        } catch (error) {
-            console.error(
-                "BUY DATA ERROR:",
-                error.response?.data ||
-                error.message
-            );
-
-            return res.status(
-                getVTPassErrorStatus(error)
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-BUY AIRTIME
-=====================================================
-*/
-
-app.post(
-    "/api/vtpass/buy-airtime",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            if (!checkVTPassKeys(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(req.body.uid);
-
-            const network =
-                cleanString(
-                    req.body.network
-                ).toLowerCase();
-
-            const phone =
-                cleanPhone(
-                    req.body.phone
-                );
-
-            const amount =
-                toMoney(
-                    req.body.amount
-                );
-
-            if (!uid) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID is required"
-                });
-            }
-
-            if (!isValidPhone(phone)) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Phone number must be 11 digits"
-                });
-            }
-
-            if (amount <= 0) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Invalid airtime amount"
-                });
-            }
-
-            const serviceID =
-                getAirtimeServiceId(network);
-
-            if (!serviceID) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Unsupported network"
-                });
-            }
-
-            const {
-                userRef
-            } =
-                await getUser(uid);
-
-            const userSnapshot =
-                await userRef.get();
-
-            const balance =
-                toMoney(
-                    userSnapshot
-                        .data()
-                        ?.walletBalance
-                );
-
-            if (balance < amount) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Insufficient wallet balance",
-                    walletBalance:
-                        balance
-                });
-            }
-
-            const requestId =
-                generateRequestId(
-                    "IDD-AIRTIME"
-                );
-
-            const response =
-                await axios.post(
-                    `${VTPASS_BASE_URL}/pay`,
-                    {
-                        request_id:
-                            requestId,
-
-                        serviceID,
-
-                        amount,
-
-                        phone
-                    },
-                    {
-                        headers:
-                            vtpassHeaders(),
-
-                        timeout:
-                            60000
-                    }
-                );
-
-            const vtpassData =
-                response.data || {};
-
-            const code =
-                String(
-                    vtpassData.code || ""
-                );
-
-            if (code !== "000") {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        vtpassData
-                            .response_description ||
-                        "Airtime purchase failed"
-                });
-            }
-
-            const transactionRef =
-                db.collection(
-                    "transactions"
-                ).doc();
-
-            let newBalance = 0;
-
-            await db.runTransaction(
-                async transaction => {
-                    const fresh =
-                        await transaction.get(
-                            userRef
-                        );
-
-                    if (!fresh.exists) {
-                        throw new Error(
-                            "User account not found"
-                        );
-                    }
-
-                    const freshBalance =
-                        toMoney(
-                            fresh
-                                .data()
-                                .walletBalance
-                        );
-
-                    if (
-                        freshBalance < amount
-                    ) {
-                        throw new Error(
-                            "Insufficient wallet balance"
-                        );
-                    }
-
-                    newBalance =
-                        toMoney(
-                            freshBalance - amount
-                        );
-
-                    transaction.update(
-                        userRef,
-                        {
-                            walletBalance:
-                                newBalance,
-
-                            updatedAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-                        }
-                    );
-
-                    transaction.set(
-                        transactionRef,
-                        {
-                            userId:
-                                uid,
-
-                            type:
-                                "airtime_purchase",
-
-                            service:
-                                "airtime",
-
-                            network,
-
-                            phone,
-
-                            amount,
-
-                            serviceID,
-
-                            requestId,
-
-                            vtpassCode:
-                                code,
-
-                            status:
-                                "successful",
-
-                            createdAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-                        }
-                    );
-
-                    saveWalletHistory(
-                        transaction,
-                        uid,
-                        newBalance,
-                        "airtime_purchase",
-                        -amount,
-                        {
-                            service:
-                                "airtime",
-
-                            network,
-
-                            phone,
-
-                            transactionId:
-                                transactionRef.id
-                        }
-                    );
-                }
-            );
-
-            return res.json({
-                success: true,
-
-                message:
-                    "Airtime purchase successful",
-
-                transactionId:
-                    transactionRef.id,
-
-                requestId,
-
-                amount,
-
-                walletBalance:
-                    newBalance
-            });
-
-        } catch (error) {
-            return res.status(
-                getVTPassErrorStatus(error)
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-ELECTRICITY
-=====================================================
-*/
-
-app.post(
-    "/api/vtpass/buy-electricity",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            if (!checkVTPassKeys(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(req.body.uid);
-
-            const disco =
-                cleanString(req.body.disco);
-
-            const meterNumber =
-                cleanString(
-                    req.body.meter_number
-                );
-
-            const meterType =
-                cleanString(
-                    req.body.meter_type
-                ).toLowerCase();
-
-            const amount =
-                toMoney(
-                    req.body.amount
-                );
-
-            if (
-                !uid ||
-                !disco ||
-                !meterNumber
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID, disco and meter number are required"
-                });
-            }
-
-            if (
-                !["prepaid", "postpaid"]
-                    .includes(meterType)
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Meter type must be prepaid or postpaid"
-                });
-            }
-
-            if (amount <= 0) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Invalid electricity amount"
-                });
-            }
-
-            const serviceID =
-                getElectricityServiceId(
-                    disco
-                );
-
-            if (!serviceID) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Unsupported electricity provider"
-                });
-            }
-
-            const {
-                userRef,
-                userData
-            } =
-                await getUser(uid);
-
-            const balance =
-                toMoney(
-                    userData.walletBalance
-                );
-
-            if (balance < amount) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Insufficient wallet balance"
-                });
-            }
-
-            const requestId =
-                generateRequestId(
-                    "IDD-ELEC"
-                );
-
-            const response =
-                await axios.post(
-                    `${VTPASS_BASE_URL}/pay`,
-                    {
-                        request_id:
-                            requestId,
-
-                        serviceID,
-
-                        billersCode:
-                            meterNumber,
-
-                        variation_code:
-                            meterType,
-
-                        amount,
-
-                        phone:
-                            cleanPhone(
-                                userData.phone
-                            ) ||
-                            "08000000000"
-                    },
-                    {
-                        headers:
-                            vtpassHeaders(),
-
-                        timeout:
-                            60000
-                    }
-                );
-
-            const vtpassData =
-                response.data || {};
-
-            const code =
-                String(
-                    vtpassData.code || ""
-                );
-
-            if (code !== "000") {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        vtpassData
-                            .response_description ||
-                        "Electricity payment failed"
-                });
-            }
-
-            const transactionRef =
-                db.collection(
-                    "transactions"
-                ).doc();
-
-            let newBalance = 0;
-
-            await db.runTransaction(
-                async transaction => {
-                    const fresh =
-                        await transaction.get(
-                            userRef
-                        );
-
-                    if (!fresh.exists) {
-                        throw new Error(
-                            "User not found"
-                        );
-                    }
-
-                    const freshBalance =
-                        toMoney(
-                            fresh
-                                .data()
-                                .walletBalance
-                        );
-
-                    if (
-                        freshBalance < amount
-                    ) {
-                        throw new Error(
-                            "Insufficient wallet balance"
-                        );
-                    }
-
-                    newBalance =
-                        toMoney(
-                            freshBalance - amount
-                        );
-
-                    transaction.update(
-                        userRef,
-                        {
-                            walletBalance:
-                                newBalance,
-
-                            updatedAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-                        }
-                    );
-
-                    transaction.set(
-                        transactionRef,
-                        {
-                            userId:
-                                uid,
-
-                            type:
-                                "electricity_purchase",
-
-                            service:
-                                "electricity",
-
-                            disco,
-
-                            serviceID,
-
-                            meterNumber,
-
-                            meterType,
-
-                            amount,
-
-                            requestId,
-
-                            vtpassCode:
-                                code,
-
-                            status:
-                                "successful",
-
-                            createdAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-                        }
-                    );
-
-                    saveWalletHistory(
-                        transaction,
-                        uid,
-                        newBalance,
-                        "electricity_purchase",
-                        -amount,
-                        {
-                            service:
-                                "electricity",
-
-                            transactionId:
-                                transactionRef.id
-                        }
-                    );
-                }
-            );
-
-            return res.json({
-                success: true,
-
-                message:
-                    "Electricity payment successful",
-
-                transactionId:
-                    transactionRef.id,
-
-                requestId,
-
-                amount,
-
-                walletBalance:
-                    newBalance,
-
-                vtpassResponse:
-                    vtpassData.content ||
-                    null
-            });
-
-        } catch (error) {
-            return res.status(
-                getVTPassErrorStatus(error)
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-CABLE PLANS
-=====================================================
-*/
-
-app.get(
-    "/api/vtpass/cable-plans/:provider",
-    async (req, res) => {
-        try {
-            if (!checkVTPassKeys(res)) {
-                return;
-            }
-
-            const provider =
-                cleanString(
-                    req.params.provider
-                ).toLowerCase();
-
-            const serviceID =
-                getCableServiceId(
-                    provider
-                );
-
-            if (!serviceID) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Unsupported cable TV provider"
-                });
-            }
-
-            const response =
-                await axios.get(
-                    `${VTPASS_BASE_URL}/service-variations`,
-                    {
-                        params: {
-                            serviceID
-                        },
-
-                        headers:
-                            vtpassHeaders(),
-
-                        timeout:
-                            30000
-                    }
-                );
-
-            const variations =
-                response.data
-                    ?.content
-                    ?.variations ||
-                response.data
-                    ?.content
-                    ?.varations ||
-                [];
-
-            const plans =
-                variations.map(plan => ({
-                    variation_code:
-                        plan.variation_code,
-
-                    name:
-                        plan.name,
-
-                    amount:
-                        toMoney(
-                            plan.variation_amount ||
-                            plan.amount
-                        ),
-
-                    fixedPrice:
-                        plan.fixedPrice ||
-                        null
-                }));
-
-            return res.json({
-                success: true,
-                provider,
-                serviceID,
-                plans
-            });
-
-        } catch (error) {
-            return res.status(
-                getVTPassErrorStatus(error)
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-VALIDATE CABLE
-=====================================================
-*/
-
-app.post(
-    "/api/vtpass/validate-cable",
-    async (req, res) => {
-        try {
-            if (!checkVTPassKeys(res)) {
-                return;
-            }
-
-            const provider =
-                cleanString(
-                    req.body.provider
-                ).toLowerCase();
-
-            const smartcard =
-                cleanString(
-                    req.body.smartcard ||
-                    req.body.iuc ||
-                    req.body.billersCode
-                );
-
-            const serviceID =
-                getCableServiceId(
-                    provider
-                );
-
-            if (
-                !serviceID ||
-                !smartcard
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Valid provider and smartcard number are required"
-                });
-            }
-
-            const response =
-                await axios.post(
-                    `${VTPASS_BASE_URL}/merchant-verify`,
-                    {
-                        serviceID,
-
-                        billersCode:
-                            smartcard,
-
-                        type:
-                            "customer"
-                    },
-                    {
-                        headers:
-                            vtpassHeaders(),
-
-                        timeout:
-                            30000
-                    }
-                );
-
-            const data =
-                response.data || {};
-
-            const code =
-                String(
-                    data.code || ""
-                );
-
-            if (code !== "000") {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        data
-                            .response_description ||
-                        "Cable validation failed"
-                });
-            }
-
-            return res.json({
-                success: true,
-
-                message:
-                    "Smartcard validated successfully",
-
-                provider,
-
-                serviceID,
-
-                smartcard,
-
-                customer:
-                    data.content ||
-                    null
-            });
-
-        } catch (error) {
-            return res.status(
-                getVTPassErrorStatus(error)
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-BUY CABLE
-=====================================================
-*/
-
-app.post(
-    "/api/vtpass/buy-cable",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            if (!checkVTPassKeys(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(req.body.uid);
-
-            const provider =
-                cleanString(
-                    req.body.provider
-                ).toLowerCase();
-
-            const smartcard =
-                cleanString(
-                    req.body.smartcard ||
-                    req.body.iuc
-                );
-
-            const variationCode =
-                cleanString(
-                    req.body.variation_code
-                );
-
-            if (
-                !uid ||
-                !provider ||
-                !smartcard ||
-                !variationCode
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID, provider, smartcard and plan are required"
-                });
-            }
-
-            const serviceID =
-                getCableServiceId(
-                    provider
-                );
-
-            if (!serviceID) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Unsupported cable TV provider"
-                });
-            }
-
-            const plan =
-                await getCablePlanPrice(
-                    serviceID,
-                    variationCode
-                );
-
-            const amount =
-                plan.amount;
-
-            const {
-                userRef,
-                userData
-            } =
-                await getUser(uid);
-
-            const balance =
-                toMoney(
-                    userData.walletBalance
-                );
-
-            if (balance < amount) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Insufficient wallet balance",
-                    walletBalance:
-                        balance,
-                    required:
-                        amount
-                });
-            }
-
-            const requestId =
-                generateRequestId(
-                    "IDD-CABLE"
-                );
-
-            const response =
-                await axios.post(
-                    `${VTPASS_BASE_URL}/pay`,
-                    {
-                        request_id:
-                            requestId,
-
-                        serviceID,
-
-                        billersCode:
-                            smartcard,
-
-                        variation_code:
-                            variationCode,
-
-                        amount,
-
-                        phone:
-                            cleanPhone(
-                                userData.phone
-                            ) ||
-                            "08000000000"
-                    },
-                    {
-                        headers:
-                            vtpassHeaders(),
-
-                        timeout:
-                            60000
-                    }
-                );
-
-            const vtpassData =
-                response.data || {};
-
-            const code =
-                String(
-                    vtpassData.code || ""
-                );
-
-            if (code !== "000") {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        vtpassData
-                            .response_description ||
-                        "Cable TV subscription failed"
-                });
-            }
-
-            const transactionRef =
-                db.collection(
-                    "transactions"
-                ).doc();
-
-            let newBalance = 0;
-
-            await db.runTransaction(
-                async transaction => {
-                    const fresh =
-                        await transaction.get(
-                            userRef
-                        );
-
-                    if (!fresh.exists) {
-                        throw new Error(
-                            "User not found"
-                        );
-                    }
-
-                    const freshBalance =
-                        toMoney(
-                            fresh
-                                .data()
-                                .walletBalance
-                        );
-
-                    if (
-                        freshBalance < amount
-                    ) {
-                        throw new Error(
-                            "Insufficient wallet balance"
-                        );
-                    }
-
-                    newBalance =
-                        toMoney(
-                            freshBalance - amount
-                        );
-
-                    transaction.update(
-                        userRef,
-                        {
-                            walletBalance:
-                                newBalance,
-
-                            updatedAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-                        }
-                    );
-
-                    transaction.set(
-                        transactionRef,
-                        {
-                            userId:
-                                uid,
-
-                            type:
-                                "cable_tv_purchase",
-
-                            service:
-                                "cable_tv",
-
-                            provider,
-
-                            serviceID,
-
-                            smartcard,
-
-                            variationCode,
-
-                            planName:
-                                plan.name,
-
-                            amount,
-
-                            requestId,
-
-                            vtpassCode:
-                                code,
-
-                            status:
-                                "successful",
-
-                            createdAt:
-                                admin.firestore
-                                    .FieldValue
-                                    .serverTimestamp()
-                        }
-                    );
-
-                    saveWalletHistory(
-                        transaction,
-                        uid,
-                        newBalance,
-                        "cable_tv_purchase",
-                        -amount,
-                        {
-                            service:
-                                "cable_tv",
-
-                            provider,
-
-                            transactionId:
-                                transactionRef.id
-                        }
-                    );
-                }
-            );
-
-            return res.json({
-                success: true,
-
-                message:
-                    "Cable TV subscription successful",
-
-                transactionId:
-                    transactionRef.id,
-
-                requestId,
-
-                amount,
-
-                walletBalance:
-                    newBalance
-            });
-
-        } catch (error) {
-            return res.status(
-                getVTPassErrorStatus(error)
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-PAYSTACK INITIALIZE
-=====================================================
-*/
-
-app.post(
-    "/api/payment/initialize",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            if (!checkPaystackKey(res)) {
-                return;
-            }
-
-            const email =
-                cleanString(
-                    req.body.email
-                ).toLowerCase();
-
-            const uid =
-                cleanString(
-                    req.body.uid
-                );
-
-            const amount =
-                toMoney(
-                    req.body.amount
-                );
-
-            if (
-                !uid ||
-                !isValidEmail(email) ||
-                amount <
-                    MINIMUM_FUNDING_AMOUNT
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        `Valid email, UID and minimum ₦${MINIMUM_FUNDING_AMOUNT} are required`
-                });
-            }
-
-            const amountInKobo =
-                Math.round(
-                    amount * 100
-                );
-
-            const transactionRef =
-                db
-                    .collection(
-                        "walletTransactions"
-                    )
-                    .doc();
-
-            const response =
-                await axios.post(
-                    `${PAYSTACK_BASE_URL}/transaction/initialize`,
-                    {
-                        email,
-
-                        amount:
-                            amountInKobo,
-
-                        currency:
-                            "NGN",
-
-                        metadata: {
-                            userId:
-                                uid,
-
-                            transactionId:
-                                transactionRef.id
-                        }
-                    },
-                    {
-                        headers:
-                            paystackHeaders(),
-
-                        timeout:
-                            30000
-                    }
-                );
-
-            const paymentData =
-                response.data?.data;
-
-            if (!paymentData?.reference) {
-                throw new Error(
-                    "Paystack did not return a transaction reference"
-                );
-            }
-
-            await transactionRef.set({
-                userId:
-                    uid,
-
-                email,
-
-                amount,
-
-                amountKobo:
-                    amountInKobo,
-
-                type:
-                    "wallet_funding",
-
-                fundingMethod:
-                    "online",
-
-                status:
-                    "pending",
-
-                reference:
-                    paymentData.reference,
-
-                createdAt:
-                    admin.firestore
-                        .FieldValue
-                        .serverTimestamp()
-            });
-
-            return res.json({
-                success: true,
-
-                data: {
-                    authorization_url:
-                        paymentData.authorization_url,
-
-                    access_code:
-                        paymentData.access_code,
-
-                    reference:
-                        paymentData.reference,
-
-                    transactionId:
-                        transactionRef.id
-                }
-            });
-
-        } catch (error) {
-            console.error(
-                "PAYSTACK INITIALIZE ERROR:",
-                error.response?.data ||
-                error.message
-            );
-
-            return res.status(
-                error.response?.status ||
-                500
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-PAYSTACK VERIFY
-=====================================================
-*/
-
-app.get(
-    "/api/payment/verify/:reference",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            if (!checkPaystackKey(res)) {
-                return;
-            }
-
-            const reference =
-                cleanString(
-                    req.params.reference
-                );
-
-            if (!reference) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Transaction reference is required"
-                });
-            }
-
-            const transactionSnapshot =
-                await db
-                    .collection(
-                        "walletTransactions"
-                    )
-                    .where(
-                        "reference",
-                        "==",
-                        reference
-                    )
-                    .limit(1)
-                    .get();
-
-            if (
-                transactionSnapshot.empty
-            ) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Transaction not found"
-                });
-            }
-
-            const response =
-                await axios.get(
-                    `${PAYSTACK_BASE_URL}/transaction/verify/${encodeURIComponent(reference)}`,
-                    {
-                        headers:
-                            paystackHeaders(),
-
-                        timeout:
-                            30000
-                    }
-                );
-
-            const payment =
-                response.data?.data;
-
-            if (!payment) {
-                throw new Error(
-                    "Invalid Paystack response"
-                );
-            }
-
-            if (
-                payment.status !==
-                "success"
-            ) {
-                return res.json({
-                    success: false,
-
-                    status:
-                        payment.status,
-
-                    message:
-                        "Payment has not been completed"
-                });
-            }
-
-            const result =
-                await processSuccessfulPaystackPayment(
-                    reference,
-                    payment
-                );
-
-            return res.json({
-                success: true,
-
-                alreadyProcessed:
-                    result.alreadyProcessed,
-
-                message:
-                    result.alreadyProcessed
-                        ? "Payment was already processed"
-                        : "Payment verified and wallet funded successfully",
-
-                status:
-                    "success",
-
-                reference,
-
-                amount:
-                    result.amount,
-
-                walletBalance:
-                    result.newBalance,
-
-                currency:
-                    payment.currency,
-
-                paidAt:
-                    payment.paid_at ||
-                    null
-            });
-
-        } catch (error) {
-            console.error(
-                "PAYSTACK VERIFY ERROR:",
-                error.response?.data ||
-                error.message
-            );
-
-            return res.status(
-                error.response?.status ||
-                500
-            ).json({
-                success: false,
-                message:
-                    getErrorMessage(error)
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-PAYMENT STATUS
-=====================================================
-*/
-
-app.get(
-    "/api/payment/status/:reference",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            const reference =
-                cleanString(
-                    req.params.reference
-                );
-
-            if (!reference) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Transaction reference is required"
-                });
-            }
-
-            const snapshot =
-                await db
-                    .collection(
-                        "walletTransactions"
-                    )
-                    .where(
-                        "reference",
-                        "==",
-                        reference
-                    )
-                    .limit(1)
-                    .get();
-
-            if (snapshot.empty) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Payment transaction not found"
-                });
-            }
-
-            const doc =
-                snapshot.docs[0];
-
-            return res.json({
-                success: true,
-
-                transaction: {
-                    id:
-                        doc.id,
-
-                    ...formatFirestoreData(
-                        doc.data() || {}
-                    )
-                }
-            });
-
-        } catch (error) {
-            return res.status(500).json({
-                success: false,
-                message:
-                    error.message
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-CUSTOMER SUPPORT
-WALLET FUNDING CHECK
-
-READ ONLY:
-This endpoint does NOT credit wallet.
-It only checks walletTransactions.
-=====================================================
-*/
-
-app.get(
-    "/api/support/wallet-funding/:uid/:reference",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(
-                    req.params.uid
-                );
-
-            const reference =
-                cleanString(
-                    req.params.reference
-                );
-
-            if (!uid || !reference) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID and transaction reference are required"
-                });
-            }
-
-            const snapshot =
-                await db
-                    .collection(
-                        "walletTransactions"
-                    )
-                    .where(
-                        "reference",
-                        "==",
-                        reference
-                    )
-                    .limit(1)
-                    .get();
-
-            if (snapshot.empty) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Wallet funding transaction not found"
-                });
-            }
-
-            const doc =
-                snapshot.docs[0];
-
-            const transaction =
-                doc.data() || {};
-
-            /*
-            SECURITY:
-            Make sure this transaction belongs
-            to the UID asking for it.
-            */
-
-            if (
-                cleanString(
-                    transaction.userId
-                ) !== uid
-            ) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Wallet funding transaction not found"
-                });
-            }
-
-            const formatted =
-                formatFirestoreData(
-                    transaction
-                );
-
-            return res.json({
-                success: true,
-
-                transaction: {
-                    id:
-                        doc.id,
-
-                    reference:
-                        formatted.reference ||
-                        reference,
-
-                    amount:
-                        toMoney(
-                            formatted.amount ||
-                            0
-                        ),
-
-                    amountKobo:
-                        Number(
-                            formatted.amountKobo ||
-                            0
-                        ),
-
-                    status:
-                        formatted.status ||
-                        "unknown",
-
-                    type:
-                        formatted.type ||
-                        "wallet_funding",
-
-                    fundingMethod:
-                        formatted.fundingMethod ||
-                        "online",
-
-                    createdAt:
-                        formatted.createdAt ||
-                        null,
-
-                    verifiedAt:
-                        formatted.verifiedAt ||
-                        null,
-
-                    paidAt:
-                        formatted.paidAt ||
-                        null,
-
-                    paystackStatus:
-                        formatted.paystackStatus ||
-                        null,
-
-                    paystackReference:
-                        formatted.paystackReference ||
-                        null
-                }
-            });
-
-        } catch (error) {
-            console.error(
-                "WALLET FUNDING SUPPORT ERROR:",
-                error.message
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to check wallet funding transaction"
-            });
-        }
-    }
-);
-/*
-=====================================================
-CUSTOMER SUPPORT
-TRANSACTION CHECK
-
-READ ONLY:
-This endpoint only checks a customer's transaction.
-It does NOT deduct or add money.
-=====================================================
-*/
-
-app.get(
-    "/api/support/transaction/:uid/:transactionId",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            const uid =
-                cleanString(
-                    req.params.uid
-                );
-
-            const transactionId =
-                cleanString(
-                    req.params.transactionId
-                );
-
-            if (!uid || !transactionId) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "UID and transaction ID are required"
-                });
-            }
-
-            /*
-            =================================================
-            FIND TRANSACTION BY FIRESTORE DOCUMENT ID
-            =================================================
-            */
-
-            const transactionRef =
-                db
-                    .collection("transactions")
-                    .doc(transactionId);
-
-            const snapshot =
-                await transactionRef.get();
-
-            if (!snapshot.exists) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Transaction not found"
-                });
-            }
-
-            const transaction =
-                snapshot.data() || {};
-
-            /*
-            =================================================
-            SECURITY CHECK
-
-            Make sure this transaction belongs
-            to the logged-in customer.
-            =================================================
-            */
-
-            if (
-                cleanString(
-                    transaction.userId
-                ) !== uid
-            ) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Transaction not found"
-                });
-            }
-
-            const formatted =
-                formatFirestoreData(
-                    transaction
-                );
-
-            /*
-            =================================================
-            RETURN SAFE TRANSACTION INFORMATION
-            =================================================
-            */
-
-            return res.json({
-                success: true,
-
-                transaction: {
-                    id:
-                        snapshot.id,
-
-                    transactionId:
-                        snapshot.id,
-
-                    reference:
-                        formatted.reference ||
-                        formatted.requestId ||
-                        snapshot.id,
-
-                    requestId:
-                        formatted.requestId ||
-                        null,
-
-                    userId:
-                        uid,
-
-                    type:
-                        formatted.type ||
-                        null,
-
-                    service:
-                        formatted.service ||
-                        null,
-
-                    amount:
-                        toMoney(
-                            formatted.amount ||
-                            0
-                        ),
-
-                    status:
-                        formatted.status ||
-                        "unknown",
-
-                    createdAt:
-                        formatted.createdAt ||
-                        null,
-
-                    network:
-                        formatted.network ||
-                        null,
-
-                    phone:
-                        formatted.phone ||
-                        null,
-
-                    provider:
-                        formatted.provider ||
-                        null,
-
-                    disco:
-                        formatted.disco ||
-                        null,
-
-                    meterNumber:
-                        formatted.meterNumber ||
-                        null,
-
-                    meterType:
-                        formatted.meterType ||
-                        null,
-
-                    smartcard:
-                        formatted.smartcard ||
-                        null,
-
-                    planName:
-                        formatted.planName ||
-                        null,
-
-                    variationCode:
-                        formatted.variationCode ||
-                        null
-                }
-            });
-
-        } catch (error) {
-            console.error(
-                "TRANSACTION SUPPORT ERROR:",
-                error.message
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to check transaction"
-            });
-        }
-    }
-);
-
-/*
-=====================================================
-HOME
-=====================================================
-*/
-
-app.get(
-    "/",
-    (req, res) => {
-        return res.json({
-            success: true,
-
-            message:
-                "ISMAIL DEEN DATA Backend is running",
-
-            status:
-                "online"
+  "/api/payment/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    try {
+      if (!process.env.PAYSTACK_SECRET_KEY) {
+        return res.sendStatus(200);
+      }
+
+      const signature =
+        req.headers["x-paystack-signature"];
+
+      if (!signature) {
+        return res.status(401).send("Missing signature");
+      }
+
+      const hash = crypto
+        .createHmac(
+          "sha512",
+          process.env.PAYSTACK_SECRET_KEY
+        )
+        .update(req.body)
+        .digest("hex");
+
+      if (hash !== signature) {
+        return res.status(401).send("Invalid signature");
+      }
+
+      const event = JSON.parse(
+        req.body.toString("utf8")
+      );
+
+      if (event.event !== "charge.success") {
+        return res.status(200).json({
+          success: true,
+          ignored: true,
         });
-    }
-);
+      }
 
+      const reference = event?.data?.reference;
 
-/*
-=====================================================
-HEALTH
-=====================================================
-*/
-
-app.get(
-    "/api/health",
-    (req, res) => {
-        return res.json({
-            success: true,
-
-            status:
-                "online",
-
-            firebase:
-                db
-                    ? "connected"
-                    : "disconnected",
-
-            vtpass:
-                process.env.VTPASS_API_KEY &&
-                process.env.VTPASS_SECRET_KEY
-                    ? "configured"
-                    : "not configured",
-
-            paystack:
-                process.env.PAYSTACK_SECRET_KEY
-                    ? "configured"
-                    : "not configured",
-
-            environment:
-                process.env.NODE_ENV ||
-                "development",
-
-            time:
-                new Date().toISOString()
+      if (!reference) {
+        return res.status(200).json({
+          success: true,
+          ignored: true,
         });
+      }
+
+      await processSuccessfulPaystackPayment(
+        reference,
+        event.data
+      );
+
+      return res.status(200).json({
+        success: true,
+      });
+    } catch (error) {
+      console.error("PAYSTACK WEBHOOK ERROR:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Webhook processing failed",
+      });
     }
+  }
 );
 
-
-/*
-=====================================================
-FIREBASE TEST
-=====================================================
-*/
-
-app.get(
-    "/api/firebase/test",
-    async (req, res) => {
-        try {
-            if (!checkFirebase(res)) {
-                return;
-            }
-
-            await db
-                .collection("system")
-                .doc("connection")
-                .set(
-                    {
-                        connected:
-                            true,
-
-                        updatedAt:
-                            admin.firestore
-                                .FieldValue
-                                .serverTimestamp()
-                    },
-                    {
-                        merge:
-                            true
-                    }
-                );
-
-            return res.json({
-                success: true,
-
-                message:
-                    "Firebase connected successfully"
-            });
-
-        } catch (error) {
-            console.error(
-                "FIREBASE TEST ERROR:",
-                error.message
-            );
-
-            return res.status(500).json({
-                success: false,
-
-                message:
-                    "Firebase connection failed"
-            });
-        }
-    }
-);
-
-
-/*
-=====================================================
-404
-=====================================================
-*/
+// ============================================================
+// JSON BODY PARSER
+// ============================================================
 
 app.use(
-    (req, res) => {
+  express.json({
+    limit: "1mb",
+  })
+);
+
+// ============================================================
+// WALLET ROUTES
+// ============================================================
+
+// Balance
+app.get(
+  "/api/wallet/balance/:uid",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      if (!checkFirebase(res)) return;
+
+      const { userData } = await getUser(req.params.uid);
+
+      if (!userData) {
         return res.status(404).json({
-            success: false,
-
-            message:
-                "API endpoint not found",
-
-            path:
-                req.originalUrl
+          success: false,
+          message: "User not found",
         });
+      }
+
+      return res.json({
+        success: true,
+        balance: toMoney(
+          userData.walletBalance || 0
+        ),
+      });
+    } catch (error) {
+      console.error("BALANCE ERROR:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
     }
+  }
 );
 
+// Wallet details
+app.get(
+  "/api/wallet/:uid",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      if (!checkFirebase(res)) return;
 
-/*
-=====================================================
-GLOBAL ERROR HANDLER
-=====================================================
-*/
+      const { userData } = await getUser(req.params.uid);
 
-app.use(
-    (error, req, res, next) => {
-        console.error(
-            "GLOBAL ERROR:",
-            error
-        );
+      if (!userData) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found",
+        });
+      }
 
-        if (res.headersSent) {
-            return next(error);
+      return res.json({
+        success: true,
+        user: {
+          uid: req.params.uid,
+          name:
+            userData.name ||
+            userData.displayName ||
+            "",
+          email: userData.email || "",
+          phone: userData.phone || "",
+          walletBalance: toMoney(
+            userData.walletBalance || 0
+          ),
+        },
+      });
+    } catch (error) {
+      console.error("WALLET DETAILS ERROR:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// Wallet history
+app.get(
+  "/api/wallet/:uid/history",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      if (!checkFirebase(res)) return;
+
+      const snapshot = await db
+        .collection("walletHistory")
+        .where("uid", "==", req.params.uid)
+        .limit(100)
+        .get();
+
+      const history = snapshot.docs
+        .map((doc) => ({
+          id: doc.id,
+          ...formatFirestoreData(doc.data()),
+        }))
+        .sort((a, b) => {
+          const aTime = a.createdAt
+            ? new Date(a.createdAt).getTime()
+            : 0;
+
+          const bTime = b.createdAt
+            ? new Date(b.createdAt).getTime()
+            : 0;
+
+          return bTime - aTime;
+        });
+
+      return res.json({
+        success: true,
+        history,
+      });
+    } catch (error) {
+      console.error("WALLET HISTORY ERROR:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// Wallet chart
+app.get(
+  "/api/wallet/:uid/chart",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      if (!checkFirebase(res)) return;
+
+      const snapshot = await db
+        .collection("walletHistory")
+        .where("uid", "==", req.params.uid)
+        .limit(100)
+        .get();
+
+      const chart = snapshot.docs
+        .map((doc) => ({
+          id: doc.id,
+          ...formatFirestoreData(doc.data()),
+        }))
+        .sort((a, b) => {
+          const aTime = a.createdAt
+            ? new Date(a.createdAt).getTime()
+            : 0;
+
+          const bTime = b.createdAt
+            ? new Date(b.createdAt).getTime()
+            : 0;
+
+          return aTime - bTime;
+        });
+
+      return res.json({
+        success: true,
+        chart,
+      });
+    } catch (error) {
+      console.error("WALLET CHART ERROR:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// Wallet transactions
+app.get(
+  "/api/wallet/:uid/transactions",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      if (!checkFirebase(res)) return;
+
+      const snapshot = await db
+        .collection("walletTransactions")
+        .where("uid", "==", req.params.uid)
+        .limit(100)
+        .get();
+
+      const transactions = snapshot.docs
+        .map((doc) => ({
+          id: doc.id,
+          ...formatFirestoreData(doc.data()),
+        }))
+        .sort((a, b) => {
+          const aTime = a.createdAt
+            ? new Date(a.createdAt).getTime()
+            : 0;
+
+          const bTime = b.createdAt
+            ? new Date(b.createdAt).getTime()
+            : 0;
+
+          return bTime - aTime;
+        });
+
+      return res.json({
+        success: true,
+        transactions,
+      });
+    } catch (error) {
+      console.error(
+        "WALLET TRANSACTIONS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// VTPASS PLAN HELPERS
+// ============================================================
+
+async function getDataPlanPrice(
+  serviceID,
+  variationCode
+) {
+  const response = await axios.get(
+    `${VTPASS_BASE_URL}/service-variations`,
+    {
+      params: {
+        serviceID,
+      },
+      headers: vtpassHeaders(),
+      timeout: 20000,
+    }
+  );
+
+  const variations =
+    response.data?.content?.varations ||
+    response.data?.content?.variations ||
+    [];
+
+  const variation = variations.find(
+    (item) =>
+      String(item.variation_code) ===
+      String(variationCode)
+  );
+
+  return variation || null;
+}
+
+async function getCablePlanPrice(
+  serviceID,
+  variationCode
+) {
+  const response = await axios.get(
+    `${VTPASS_BASE_URL}/service-variations`,
+    {
+      params: {
+        serviceID,
+      },
+      headers: vtpassHeaders(),
+      timeout: 20000,
+    }
+  );
+
+  const variations =
+    response.data?.content?.varations ||
+    response.data?.content?.variations ||
+    [];
+
+  return (
+    variations.find(
+      (item) =>
+        String(item.variation_code) ===
+        String(variationCode)
+    ) || null
+  );
+}
+
+// ============================================================
+// DATA PLANS
+// ============================================================
+
+app.get(
+  "/api/vtpass/data-plans/:network",
+  requireFirebaseAuth,
+  checkVTPassKeys,
+  async (req, res) => {
+    try {
+      const network =
+        cleanString(req.params.network).toLowerCase();
+
+      const serviceID =
+        DATA_SERVICE_IDS[network];
+
+      if (!serviceID) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported network",
+        });
+      }
+
+      const response = await axios.get(
+        `${VTPASS_BASE_URL}/service-variations`,
+        {
+          params: {
+            serviceID,
+          },
+          headers: vtpassHeaders(),
+          timeout: 20000,
         }
+      );
 
-        return res.status(500).json({
-            success: false,
+      return res.json({
+        success: true,
+        serviceID,
+        data:
+          response.data?.content
+            ?.varations ||
+          response.data?.content
+            ?.variations ||
+          [],
+      });
+    } catch (error) {
+      console.error(
+        "DATA PLANS ERROR:",
+        error?.response?.data || error
+      );
 
-            message:
-                "Internal server error"
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// CABLE PLANS
+// ============================================================
+
+app.get(
+  "/api/vtpass/cable-plans/:provider",
+  requireFirebaseAuth,
+  checkVTPassKeys,
+  async (req, res) => {
+    try {
+      const provider =
+        cleanString(req.params.provider).toLowerCase();
+
+      const serviceID =
+        CABLE_SERVICE_IDS[provider];
+
+      if (!serviceID) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported cable provider",
         });
+      }
+
+      const response = await axios.get(
+        `${VTPASS_BASE_URL}/service-variations`,
+        {
+          params: {
+            serviceID,
+          },
+          headers: vtpassHeaders(),
+          timeout: 20000,
+        }
+      );
+
+      return res.json({
+        success: true,
+        serviceID,
+        data:
+          response.data?.content
+            ?.varations ||
+          response.data?.content
+            ?.variations ||
+          [],
+      });
+    } catch (error) {
+      console.error(
+        "CABLE PLANS ERROR:",
+        error?.response?.data || error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
     }
+  }
 );
 
+// ============================================================
+// WALLET PURCHASE ENGINE
+// ============================================================
 
-/*
-=====================================================
-START SERVER
-=====================================================
-*/
+async function reserveWalletPurchase({
+  uid,
+  requestId,
+  amount,
+  type,
+  serviceID,
+  metadata = {},
+}) {
+  const transactionRef = db
+    .collection("serviceTransactions")
+    .doc(requestId);
 
-app.listen(
-    PORT,
-    "0.0.0.0",
-    () => {
-        console.log(
-            "============================================"
-        );
+  const userRef = db
+    .collection("users")
+    .doc(uid);
 
-        console.log(
-            "ISMAIL DEEN DATA SERVER RUNNING"
-        );
+  const result = await db.runTransaction(
+    async (transaction) => {
+      const existing =
+        await transaction.get(transactionRef);
 
-        console.log(
-            `Port: ${PORT}`
-        );
+      if (existing.exists) {
+        return {
+          alreadyExists: true,
+          transactionRef,
+          data: existing.data(),
+        };
+      }
 
-        console.log(
-            `VTpass: ${VTPASS_BASE_URL}`
-        );
+      const userSnapshot =
+        await transaction.get(userRef);
 
-        console.log(
-            `Firebase: ${
-                db
-                    ? "CONNECTED"
-                    : "DISCONNECTED"
-            }`
-        );
+      if (!userSnapshot.exists) {
+        throw new Error("User account not found");
+      }
 
-        console.log(
-            "============================================"
-        );
+      const userData = userSnapshot.data() || {};
+
+      const balance = Number(
+        userData.walletBalance || 0
+      );
+
+      const purchaseAmount = toMoney(amount);
+
+      if (balance < purchaseAmount) {
+        throw new Error("Insufficient wallet balance");
+      }
+
+      const newBalance =
+        toMoney(balance - purchaseAmount);
+
+      transaction.update(userRef, {
+        walletBalance: newBalance,
+        updatedAt:
+          admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(transactionRef, {
+        uid,
+        requestId,
+        amount: purchaseAmount,
+        type,
+        serviceID,
+        status: "provider_pending",
+        previousBalance: balance,
+        balanceAfterDebit: newBalance,
+        metadata,
+        createdAt:
+          admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt:
+          admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return {
+        alreadyExists: false,
+        transactionRef,
+        data: {
+          uid,
+          requestId,
+          amount: purchaseAmount,
+          type,
+          serviceID,
+          status: "provider_pending",
+          previousBalance: balance,
+          balanceAfterDebit: newBalance,
+          metadata,
+        },
+      };
     }
+  );
+
+  return result;
+}
+
+// ============================================================
+// COMPLETE PURCHASE
+// ============================================================
+
+async function markPurchaseCompleted(
+  requestId,
+  providerResponse
+) {
+  const transactionRef = db
+    .collection("serviceTransactions")
+    .doc(requestId);
+
+  await transactionRef.update({
+    status: "completed",
+    providerResponse,
+    completedAt:
+      admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt:
+      admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  const snapshot =
+    await transactionRef.get();
+
+  return snapshot.data();
+}
+
+// ============================================================
+// REFUND FAILED PURCHASE
+// ============================================================
+
+async function refundFailedPurchase(
+  requestId,
+  reason,
+  providerResponse = null
+) {
+  const transactionRef = db
+    .collection("serviceTransactions")
+    .doc(requestId);
+
+  return await db.runTransaction(
+    async (transaction) => {
+      const serviceSnapshot =
+        await transaction.get(transactionRef);
+
+      if (!serviceSnapshot.exists) {
+        throw new Error(
+          "Service transaction not found"
+        );
+      }
+
+      const serviceTransaction =
+        serviceSnapshot.data();
+
+      if (
+        serviceTransaction.status ===
+          "refunded" ||
+        serviceTransaction.status ===
+          "completed"
+      ) {
+        return serviceTransaction;
+      }
+
+      const uid = serviceTransaction.uid;
+
+      const amount = Number(
+        serviceTransaction.amount || 0
+      );
+
+      const userRef = db
+        .collection("users")
+        .doc(uid);
+
+      const userSnapshot =
+        await transaction.get(userRef);
+
+      if (!userSnapshot.exists) {
+        throw new Error("User not found");
+      }
+
+      const userData =
+        userSnapshot.data() || {};
+
+      const currentBalance = Number(
+        userData.walletBalance || 0
+      );
+
+      const newBalance =
+        toMoney(currentBalance + amount);
+
+      transaction.update(userRef, {
+        walletBalance: newBalance,
+        updatedAt:
+          admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      transaction.update(transactionRef, {
+        status: "refunded",
+        refundReason: reason,
+        providerResponse,
+        refundedAt:
+          admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt:
+          admin.firestore.FieldValue.serverTimestamp(),
+        balanceAfterRefund: newBalance,
+      });
+
+      const historyRef = db
+        .collection("walletHistory")
+        .doc(`refund-${requestId}`);
+
+      transaction.set(
+        historyRef,
+        {
+          uid,
+          transactionId: requestId,
+          reference: requestId,
+          type: "refund",
+          amount,
+          balanceAfter: newBalance,
+          reason,
+          createdAt:
+            admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      return {
+        ...serviceTransaction,
+        status: "refunded",
+        balanceAfterRefund: newBalance,
+      };
+    }
+  );
+}
+
+// ============================================================
+// BUY DATA
+// ============================================================
+
+app.post(
+  "/api/vtpass/buy-data",
+  requireFirebaseAuth,
+  requireOwnUid,
+  checkVTPassKeys,
+  async (req, res) => {
+    try {
+      const {
+        uid,
+        network,
+        phone,
+        variation_code,
+        amount,
+        request_id,
+      } = req.body;
+
+      const cleanNetwork =
+        cleanString(network).toLowerCase();
+
+      const cleanPhoneNumber =
+        cleanPhone(phone);
+
+      const serviceID =
+        DATA_SERVICE_IDS[cleanNetwork];
+
+      if (!serviceID) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported network",
+        });
+      }
+
+      if (!isValidPhone(cleanPhoneNumber)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid phone number",
+        });
+      }
+
+      const purchaseAmount = toMoney(amount);
+
+      if (purchaseAmount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid amount",
+        });
+      }
+
+      const requestId =
+        cleanString(request_id) ||
+        generateRequestId("DATA");
+
+      const reserved =
+        await reserveWalletPurchase({
+          uid,
+          requestId,
+          amount: purchaseAmount,
+          type: "data",
+          serviceID,
+          metadata: {
+            network: cleanNetwork,
+            phone: cleanPhoneNumber,
+            variation_code,
+          },
+        });
+
+      if (reserved.alreadyExists) {
+        return res.json({
+          success:
+            reserved.data.status === "completed",
+          message:
+            "This request has already been processed",
+          transaction: formatFirestoreData(
+            reserved.data
+          ),
+        });
+      }
+
+      const payload = {
+        request_id: requestId,
+        serviceID,
+        billersCode: cleanPhoneNumber,
+        variation_code,
+        amount: purchaseAmount,
+        phone: cleanPhoneNumber,
+      };
+
+      let providerResponse;
+
+      try {
+        const response = await axios.post(
+          `${VTPASS_BASE_URL}/pay`,
+          payload,
+          {
+            headers: vtpassHeaders(),
+            timeout: 60000,
+          }
+        );
+
+        providerResponse =
+          response.data;
+      } catch (providerError) {
+        providerResponse =
+          providerError?.response?.data || {
+            error: getErrorMessage(providerError),
+          };
+      }
+
+      const providerCode =
+        String(
+          providerResponse?.code ||
+            providerResponse?.response_code ||
+            ""
+        );
+
+      if (providerCode === "000") {
+        const completed =
+          await markPurchaseCompleted(
+            requestId,
+            providerResponse
+          );
+
+        return res.json({
+          success: true,
+          message: "Data purchase successful",
+          requestId,
+          transaction:
+            formatFirestoreData(completed),
+          provider: providerResponse,
+        });
+      }
+
+      await refundFailedPurchase(
+        requestId,
+        "VTpass reported a failed transaction",
+        providerResponse
+      );
+
+      return res.status(400).json({
+        success: false,
+        message:
+          providerResponse?.response_description ||
+          "Data purchase failed. Wallet has been refunded.",
+        requestId,
+        provider: providerResponse,
+      });
+    } catch (error) {
+      console.error(
+        "BUY DATA ERROR:",
+        error?.response?.data || error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
 );
-// ======================================================
-// AI SUPPORT ENGINE
-// ======================================================
+
+// ============================================================
+// BUY AIRTIME
+// ============================================================
+
+app.post(
+  "/api/vtpass/buy-airtime",
+  requireFirebaseAuth,
+  requireOwnUid,
+  checkVTPassKeys,
+  async (req, res) => {
+    try {
+      const {
+        uid,
+        network,
+        phone,
+        amount,
+        request_id,
+      } = req.body;
+
+      const cleanNetwork =
+        cleanString(network).toLowerCase();
+
+      const cleanPhoneNumber =
+        cleanPhone(phone);
+
+      const serviceID =
+        AIRTIME_SERVICE_IDS[cleanNetwork];
+
+      if (!serviceID) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported network",
+        });
+      }
+
+      if (!isValidPhone(cleanPhoneNumber)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid phone number",
+        });
+      }
+
+      const purchaseAmount = toMoney(amount);
+
+      if (purchaseAmount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid amount",
+        });
+      }
+
+      const requestId =
+        cleanString(request_id) ||
+        generateRequestId("AIRTIME");
+
+      const reserved =
+        await reserveWalletPurchase({
+          uid,
+          requestId,
+          amount: purchaseAmount,
+          type: "airtime",
+          serviceID,
+          metadata: {
+            network: cleanNetwork,
+            phone: cleanPhoneNumber,
+          },
+        });
+
+      if (reserved.alreadyExists) {
+        return res.json({
+          success:
+            reserved.data.status === "completed",
+          message:
+            "This request has already been processed",
+          transaction: formatFirestoreData(
+            reserved.data
+          ),
+        });
+      }
+
+      const payload = {
+        request_id: requestId,
+        serviceID,
+        amount: purchaseAmount,
+        phone: cleanPhoneNumber,
+      };
+
+      let providerResponse;
+
+      try {
+        const response = await axios.post(
+          `${VTPASS_BASE_URL}/pay`,
+          payload,
+          {
+            headers: vtpassHeaders(),
+            timeout: 60000,
+          }
+        );
+
+        providerResponse =
+          response.data;
+      } catch (providerError) {
+        providerResponse =
+          providerError?.response?.data || {
+            error: getErrorMessage(providerError),
+          };
+      }
+
+      const providerCode =
+        String(
+          providerResponse?.code ||
+            providerResponse?.response_code ||
+            ""
+        );
+
+      if (providerCode === "000") {
+        const completed =
+          await markPurchaseCompleted(
+            requestId,
+            providerResponse
+          );
+
+        return res.json({
+          success: true,
+          message: "Airtime purchase successful",
+          requestId,
+          transaction:
+            formatFirestoreData(completed),
+          provider: providerResponse,
+        });
+      }
+
+      await refundFailedPurchase(
+        requestId,
+        "VTpass reported a failed transaction",
+        providerResponse
+      );
+
+      return res.status(400).json({
+        success: false,
+        message:
+          providerResponse?.response_description ||
+          "Airtime purchase failed. Wallet has been refunded.",
+        requestId,
+        provider: providerResponse,
+      });
+    } catch (error) {
+      console.error(
+        "BUY AIRTIME ERROR:",
+        error?.response?.data || error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// BUY ELECTRICITY
+// ============================================================
+
+app.post(
+  "/api/vtpass/buy-electricity",
+  requireFirebaseAuth,
+  requireOwnUid,
+  checkVTPassKeys,
+  async (req, res) => {
+    try {
+      const {
+        uid,
+        disco,
+        meter_number,
+        variation_code,
+        amount,
+        phone,
+        request_id,
+      } = req.body;
+
+      const cleanDisco =
+        cleanString(disco).toLowerCase();
+
+      const serviceID =
+        ELECTRICITY_SERVICE_IDS[cleanDisco];
+
+      if (!serviceID) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported electricity provider",
+        });
+      }
+
+      if (!cleanString(meter_number)) {
+        return res.status(400).json({
+          success: false,
+          message: "Meter number is required",
+        });
+      }
+
+      const purchaseAmount = toMoney(amount);
+
+      if (purchaseAmount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid amount",
+        });
+      }
+
+      const requestId =
+        cleanString(request_id) ||
+        generateRequestId("ELECTRIC");
+
+      const reserved =
+        await reserveWalletPurchase({
+          uid,
+          requestId,
+          amount: purchaseAmount,
+          type: "electricity",
+          serviceID,
+          metadata: {
+            disco: cleanDisco,
+            meter_number: cleanString(
+              meter_number
+            ),
+            variation_code,
+            phone: cleanPhone(phone),
+          },
+        });
+
+      if (reserved.alreadyExists) {
+        return res.json({
+          success:
+            reserved.data.status === "completed",
+          message:
+            "This request has already been processed",
+          transaction: formatFirestoreData(
+            reserved.data
+          ),
+        });
+      }
+
+      const payload = {
+        request_id: requestId,
+        serviceID,
+        billersCode: cleanString(
+          meter_number
+        ),
+        variation_code,
+        amount: purchaseAmount,
+        phone:
+          cleanPhone(phone) ||
+          "08000000000",
+      };
+
+      let providerResponse;
+
+      try {
+        const response = await axios.post(
+          `${VTPASS_BASE_URL}/pay`,
+          payload,
+          {
+            headers: vtpassHeaders(),
+            timeout: 60000,
+          }
+        );
+
+        providerResponse =
+          response.data;
+      } catch (providerError) {
+        providerResponse =
+          providerError?.response?.data || {
+            error: getErrorMessage(providerError),
+          };
+      }
+
+      const providerCode =
+        String(
+          providerResponse?.code ||
+            providerResponse?.response_code ||
+            ""
+        );
+
+      if (providerCode === "000") {
+        const completed =
+          await markPurchaseCompleted(
+            requestId,
+            providerResponse
+          );
+
+        return res.json({
+          success: true,
+          message:
+            "Electricity purchase successful",
+          requestId,
+          transaction:
+            formatFirestoreData(completed),
+          provider: providerResponse,
+        });
+      }
+
+      await refundFailedPurchase(
+        requestId,
+        "VTpass reported a failed transaction",
+        providerResponse
+      );
+
+      return res.status(400).json({
+        success: false,
+        message:
+          providerResponse?.response_description ||
+          "Electricity purchase failed. Wallet has been refunded.",
+        requestId,
+        provider: providerResponse,
+      });
+    } catch (error) {
+      console.error(
+        "BUY ELECTRICITY ERROR:",
+        error?.response?.data || error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// VALIDATE CABLE
+// ============================================================
+
+app.post(
+  "/api/vtpass/validate-cable",
+  requireFirebaseAuth,
+  checkVTPassKeys,
+  async (req, res) => {
+    try {
+      const {
+        provider,
+        smartcard_number,
+      } = req.body;
+
+      const cleanProvider =
+        cleanString(provider).toLowerCase();
+
+      const serviceID =
+        CABLE_SERVICE_IDS[cleanProvider];
+
+      if (!serviceID) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported cable provider",
+        });
+      }
+
+      if (!cleanString(smartcard_number)) {
+        return res.status(400).json({
+          success: false,
+          message: "Smartcard number is required",
+        });
+      }
+
+      const requestId =
+        generateRequestId("CABLEVALIDATE");
+
+      const response = await axios.post(
+        `${VTPASS_BASE_URL}/merchant-verify`,
+        {
+          billersCode: cleanString(
+            smartcard_number
+          ),
+          serviceID,
+          type: "smartcard",
+        },
+        {
+          headers: vtpassHeaders(),
+          timeout: 30000,
+        }
+      );
+
+      return res.json({
+        success: true,
+        requestId,
+        provider: response.data,
+      });
+    } catch (error) {
+      console.error(
+        "VALIDATE CABLE ERROR:",
+        error?.response?.data || error
+      );
+
+      return res.status(400).json({
+        success: false,
+        message: getErrorMessage(error),
+        provider:
+          error?.response?.data || null,
+      });
+    }
+  }
+);
+
+// ============================================================
+// BUY CABLE
+// ============================================================
+
+app.post(
+  "/api/vtpass/buy-cable",
+  requireFirebaseAuth,
+  requireOwnUid,
+  checkVTPassKeys,
+  async (req, res) => {
+    try {
+      const {
+        uid,
+        provider,
+        smartcard_number,
+        variation_code,
+        amount,
+        phone,
+        request_id,
+      } = req.body;
+
+      const cleanProvider =
+        cleanString(provider).toLowerCase();
+
+      const serviceID =
+        CABLE_SERVICE_IDS[cleanProvider];
+
+      if (!serviceID) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported cable provider",
+        });
+      }
+
+      if (!cleanString(smartcard_number)) {
+        return res.status(400).json({
+          success: false,
+          message: "Smartcard number is required",
+        });
+      }
+
+      const purchaseAmount = toMoney(amount);
+
+      if (purchaseAmount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid amount",
+        });
+      }
+
+      const requestId =
+        cleanString(request_id) ||
+        generateRequestId("CABLE");
+
+      const reserved =
+        await reserveWalletPurchase({
+          uid,
+          requestId,
+          amount: purchaseAmount,
+          type: "cable",
+          serviceID,
+          metadata: {
+            provider: cleanProvider,
+            smartcard_number:
+              cleanString(smartcard_number),
+            variation_code,
+            phone: cleanPhone(phone),
+          },
+        });
+
+      if (reserved.alreadyExists) {
+        return res.json({
+          success:
+            reserved.data.status === "completed",
+          message:
+            "This request has already been processed",
+          transaction: formatFirestoreData(
+            reserved.data
+          ),
+        });
+      }
+
+      const payload = {
+        request_id: requestId,
+        serviceID,
+        billersCode: cleanString(
+          smartcard_number
+        ),
+        variation_code,
+        amount: purchaseAmount,
+        phone:
+          cleanPhone(phone) ||
+          "08000000000",
+      };
+
+      let providerResponse;
+
+      try {
+        const response = await axios.post(
+          `${VTPASS_BASE_URL}/pay`,
+          payload,
+          {
+            headers: vtpassHeaders(),
+            timeout: 60000,
+          }
+        );
+
+        providerResponse =
+          response.data;
+      } catch (providerError) {
+        providerResponse =
+          providerError?.response?.data || {
+            error: getErrorMessage(providerError),
+          };
+      }
+
+      const providerCode =
+        String(
+          providerResponse?.code ||
+            providerResponse?.response_code ||
+            ""
+        );
+
+      if (providerCode === "000") {
+        const completed =
+          await markPurchaseCompleted(
+            requestId,
+            providerResponse
+          );
+
+        return res.json({
+          success: true,
+          message: "Cable purchase successful",
+          requestId,
+          transaction:
+            formatFirestoreData(completed),
+          provider: providerResponse,
+        });
+      }
+
+      await refundFailedPurchase(
+        requestId,
+        "VTpass reported a failed transaction",
+        providerResponse
+      );
+
+      return res.status(400).json({
+        success: false,
+        message:
+          providerResponse?.response_description ||
+          "Cable purchase failed. Wallet has been refunded.",
+        requestId,
+        provider: providerResponse,
+      });
+    } catch (error) {
+      console.error(
+        "BUY CABLE ERROR:",
+        error?.response?.data || error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// PAYSTACK INITIALIZE
+// ============================================================
+
+app.post(
+  "/api/payment/initialize",
+  requireFirebaseAuth,
+  checkPaystackKey,
+  async (req, res) => {
+    try {
+      const {
+        email,
+        uid,
+        amount,
+      } = req.body;
+
+      if (!uid || req.user.uid !== uid) {
+        return res.status(403).json({
+          success: false,
+          message: "Unauthorized user",
+        });
+      }
+
+      const cleanEmail =
+        cleanString(email);
+
+      const fundingAmount =
+        toMoney(amount);
+
+      if (!isValidEmail(cleanEmail)) {
+        return res.status(400).json({
+          success: false,
+          message: "Valid email is required",
+        });
+      }
+
+      if (
+        fundingAmount <
+        MINIMUM_FUNDING_AMOUNT
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: `Minimum funding amount is ₦${MINIMUM_FUNDING_AMOUNT}`,
+        });
+      }
+
+      const reference =
+        generateRequestId("FUND");
+
+      const response = await axios.post(
+        `${PAYSTACK_BASE_URL}/transaction/initialize`,
+        {
+          email: cleanEmail,
+          amount: Math.round(
+            fundingAmount * 100
+          ),
+          reference,
+          metadata: {
+            uid,
+            purpose: "wallet_funding",
+          },
+          callback_url:
+            process.env.PAYSTACK_CALLBACK_URL ||
+            undefined,
+        },
+        {
+          headers: paystackHeaders(),
+          timeout: 30000,
+        }
+      );
+
+      await db
+        .collection("walletTransactions")
+        .doc(reference)
+        .set({
+          uid,
+          userId: uid,
+          reference,
+          amount: fundingAmount,
+          currency: "NGN",
+          status: "pending",
+          fundingMethod: "online",
+          createdAt:
+            admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt:
+            admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+      return res.json({
+        success: true,
+        reference,
+        authorization_url:
+          response.data?.data?.authorization_url,
+        access_code:
+          response.data?.data?.access_code,
+      });
+    } catch (error) {
+      console.error(
+        "PAYSTACK INITIALIZE ERROR:",
+        error?.response?.data || error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// PAYSTACK VERIFY
+// ============================================================
+
+app.get(
+  "/api/payment/verify/:reference",
+  requireFirebaseAuth,
+  checkPaystackKey,
+  async (req, res) => {
+    try {
+      const reference =
+        cleanString(req.params.reference);
+
+      const snapshot = await db
+        .collection("walletTransactions")
+        .where("reference", "==", reference)
+        .limit(1)
+        .get();
+
+      if (snapshot.empty) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Funding transaction not found",
+        });
+      }
+
+      const transaction =
+        snapshot.docs[0].data();
+
+      const uid =
+        transaction.uid ||
+        transaction.userId;
+
+      if (uid !== req.user.uid) {
+        return res.status(403).json({
+          success: false,
+          message: "Unauthorized transaction",
+        });
+      }
+
+      const response = await axios.get(
+        `${PAYSTACK_BASE_URL}/transaction/verify/${encodeURIComponent(
+          reference
+        )}`,
+        {
+          headers: paystackHeaders(),
+          timeout: 30000,
+        }
+      );
+
+      const payment =
+        response.data?.data;
+
+      if (
+        response.data?.status &&
+        payment?.status === "success"
+      ) {
+        const result =
+          await processSuccessfulPaystackPayment(
+            reference,
+            payment
+          );
+
+        return res.json({
+          success: true,
+          status: "success",
+          result,
+        });
+      }
+
+      return res.json({
+        success: true,
+        status:
+          payment?.status || "pending",
+        payment,
+      });
+    } catch (error) {
+      console.error(
+        "PAYSTACK VERIFY ERROR:",
+        error?.response?.data || error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// PAYSTACK STATUS
+// ============================================================
+
+app.get(
+  "/api/payment/status/:reference",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+      const reference =
+        cleanString(req.params.reference);
+
+      const snapshot = await db
+        .collection("walletTransactions")
+        .where("reference", "==", reference)
+        .limit(1)
+        .get();
+
+      if (snapshot.empty) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Funding transaction not found",
+        });
+      }
+
+      const transaction =
+        snapshot.docs[0].data();
+
+      const uid =
+        transaction.uid ||
+        transaction.userId;
+
+      if (uid !== req.user.uid) {
+        return res.status(403).json({
+          success: false,
+          message: "Unauthorized transaction",
+        });
+      }
+
+      return res.json({
+        success: true,
+        transaction: formatFirestoreData(
+          transaction
+        ),
+      });
+    } catch (error) {
+      console.error(
+        "PAYMENT STATUS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// SUPPORT SYSTEM
+// ============================================================
+
+const SUPPORT_AGENTS = {
+  wale: {
+    id: "wale",
+    name: "Wale",
+    role: "Customer Support Agent",
+    style:
+      "Friendly, calm, professional and helpful.",
+  },
+
+  "led/s": {
+    id: "led/s",
+    name: "LED/S",
+    role: "Senior Customer Support Agent",
+    style:
+      "Professional, concise, technical and solution-focused.",
+  },
+};
+
+// ============================================================
+// SUPPORT CUSTOMER
+// ============================================================
+
+async function supportGetCustomer(uid) {
+  const { userData } =
+    await getUser(uid);
+
+  if (!userData) {
+    return null;
+  }
+
+  return {
+    uid,
+    name:
+      userData.name ||
+      userData.displayName ||
+      "",
+    email: maskEmail(
+      userData.email || ""
+    ),
+    phone: maskPhone(
+      userData.phone || ""
+    ),
+    walletBalance: toMoney(
+      userData.walletBalance || 0
+    ),
+  };
+}
+
+// ============================================================
+// SUPPORT WALLET
+// ============================================================
+
+async function supportGetWallet(uid) {
+  const { userData } =
+    await getUser(uid);
+
+  if (!userData) {
+    return null;
+  }
+
+  return {
+    walletBalance: toMoney(
+      userData.walletBalance || 0
+    ),
+    updatedAt:
+      formatFirestoreData(userData)
+        ?.updatedAt || null,
+  };
+}
+
+// ============================================================
+// SUPPORT FUNDING
+// ============================================================
+
+async function supportGetFunding(
+  uid,
+  reference
+) {
+  const snapshot = await db
+    .collection("walletTransactions")
+    .where("reference", "==", reference)
+    .limit(1)
+    .get();
+
+  if (snapshot.empty) {
+    return null;
+  }
+
+  const doc = snapshot.docs[0];
+
+  const data = doc.data();
+
+  if (
+    (data.uid || data.userId) !== uid
+  ) {
+    return null;
+  }
+
+  return {
+    id: doc.id,
+    reference: data.reference,
+    amount: data.amount,
+    status: normalizeSupportStatus(
+      data.status
+    ),
+    explanation:
+      explainSupportStatus(
+        data.status
+      ),
+    fundingMethod:
+      data.fundingMethod || null,
+    paystackStatus:
+      data.paystackStatus || null,
+    createdAt:
+      formatFirestoreData(data)
+        .createdAt || null,
+  };
+}
+
+// ============================================================
+// SUPPORT TRANSACTION
+// ============================================================
+
+async function supportGetTransaction(
+  uid,
+  transactionId
+) {
+  const doc = await db
+    .collection("serviceTransactions")
+    .doc(transactionId)
+    .get();
+
+  if (!doc.exists) {
+    return null;
+  }
+
+  const data = doc.data();
+
+  if (data.uid !== uid) {
+    return null;
+  }
+
+  return {
+    id: doc.id,
+    ...formatFirestoreData(data),
+    status: normalizeSupportStatus(
+      data.status
+    ),
+    explanation:
+      explainSupportStatus(
+        data.status
+      ),
+  };
+}
+
+// ============================================================
+// RECENT TRANSACTIONS
+// ============================================================
+
+async function supportGetRecentTransactions(
+  uid
+) {
+  const snapshot = await db
+    .collection("serviceTransactions")
+    .where("uid", "==", uid)
+    .limit(20)
+    .get();
+
+  return snapshot.docs
+    .map((doc) => {
+      const data = doc.data();
+
+      return {
+        id: doc.id,
+        requestId:
+          data.requestId || doc.id,
+        type: data.type || null,
+        amount: data.amount || 0,
+        serviceID:
+          data.serviceID || null,
+        status:
+          normalizeSupportStatus(
+            data.status
+          ),
+        createdAt:
+          formatFirestoreData(data)
+            .createdAt || null,
+      };
+    })
+    .sort((a, b) => {
+      const aTime = a.createdAt
+        ? new Date(a.createdAt).getTime()
+        : 0;
+
+      const bTime = b.createdAt
+        ? new Date(b.createdAt).getTime()
+        : 0;
+
+      return bTime - aTime;
+    });
+}
+
+// ============================================================
+// SUPPORT CONTEXT
+// ============================================================
+
+async function supportBuildContext(uid) {
+  const [
+    customer,
+    wallet,
+    recentTransactions,
+  ] = await Promise.all([
+    supportGetCustomer(uid),
+    supportGetWallet(uid),
+    supportGetRecentTransactions(uid),
+  ]);
+
+  return {
+    customer,
+    wallet,
+    recentTransactions,
+  };
+}
+
+// ============================================================
+// SUPPORT AGENTS
+// ============================================================
+
+app.get(
+  "/api/support/agents",
+  requireFirebaseAuth,
+  async (req, res) => {
+    return res.json({
+      success: true,
+      agents: Object.values(
+        SUPPORT_AGENTS
+      ),
+    });
+  }
+);
+
+// ============================================================
+// SUPPORT CONTEXT
+// ============================================================
+
+app.get(
+  "/api/support/context/:uid",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      const context =
+        await supportBuildContext(
+          req.params.uid
+        );
+
+      return res.json({
+        success: true,
+        context,
+      });
+    } catch (error) {
+      console.error(
+        "SUPPORT CONTEXT ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// SUPPORT SYSTEM PROMPT
+// ============================================================
 
 const SUPPORT_SYSTEM_PROMPT = `
-You are the AI customer support assistant for ISMAIL DEEN DATA.
+You are the official AI customer support assistant for
+ISMAIL DEEN DATA.
 
-Your job is to help customers with:
-- wallet balance questions
-- wallet funding questions
-- Paystack payment status
-- data purchase status
-- airtime purchase status
-- electricity purchase status
-- cable subscription status
-- transaction explanations
-- basic account support
-- escalation to human support
+You help customers with:
+- Wallet balance
+- Wallet funding
+- Paystack payments
+- Data purchases
+- Airtime purchases
+- Electricity purchases
+- Cable TV purchases
+- Transaction status
+- Failed transactions
+- Pending transactions
+- General account questions
 
 IMPORTANT RULES:
 
-1. Never claim that you changed a wallet balance.
-2. Never debit a customer wallet.
-3. Never credit a customer wallet.
-4. Never issue a refund.
-5. Never delete a transaction.
-6. Never modify financial records.
-7. Never invent a transaction status.
-8. Use only the backend context provided to you.
-9. If information is missing, clearly say that the information is unavailable.
-10. If a transaction needs manual investigation, recommend escalation to human support.
-11. Be polite, concise and helpful.
-12. You may communicate in English or Hausa depending on the customer's language.
-13. Never expose secret API keys, Firebase credentials, Paystack secret keys or VTpass credentials.
-14. Do not expose internal database implementation details unnecessarily.
+1. Use only information supplied in the backend context.
+2. Never invent transaction status.
+3. Never invent payment confirmation.
+4. Never claim a refund happened unless backend context says so.
+5. Never change wallet balance.
+6. Never debit wallet.
+7. Never credit wallet.
+8. Never issue refunds yourself.
+9. Never delete transactions.
+10. Never expose API keys, Firebase credentials, Paystack keys,
+    VTpass keys or OpenAI keys.
+11. If a transaction is pending or unclear, explain that clearly.
+12. If the issue needs human intervention, recommend escalation.
+13. Keep answers short and easy to understand.
+14. You can answer in English or Hausa depending on the customer.
+15. Do not expose internal database details unnecessarily.
+
+The AI is READ-ONLY.
+It can CHECK, EXPLAIN and ESCALATE.
+It cannot perform financial mutations.
 `;
 
-// ======================================================
-// OPENAI CONFIGURATION
-// ======================================================
-
-function checkAIKey(req, res, next) {
-    if (!process.env.OPENAI_API_KEY) {
-        return res.status(503).json({
-            success: false,
-            message:
-                "AI support service is not configured"
-        });
-    }
-
-    next();
-}
-
-// ======================================================
-// AI RESPONSE
-// ======================================================
+// ============================================================
+// OPENAI SUPPORT RESPONSE
+// ============================================================
 
 async function generateAISupportResponse({
-    agent,
-    customerMessage,
-    context
+  agent,
+  customerMessage,
+  context,
 }) {
-    if (!process.env.OPENAI_API_KEY) {
-        throw new Error(
-            "OPENAI_API_KEY is missing"
-        );
-    }
+  const selectedAgent =
+    SUPPORT_AGENTS[agent] ||
+    SUPPORT_AGENTS.wale;
 
-    const agentInfo =
-        SUPPORT_AGENTS[agent] ||
-        SUPPORT_AGENTS.wale;
+  const input = `
+Agent:
+${selectedAgent.name}
 
-    const developerInstructions = `
-You are ${agentInfo.name}.
+Agent role:
+${selectedAgent.role}
 
-Role:
-${agentInfo.role}
+Agent style:
+${selectedAgent.style}
 
-Tone:
-${agentInfo.tone}
+Backend customer context:
+${JSON.stringify(context, null, 2)}
 
-Customer support system:
-ISMAIL DEEN DATA
-
-Use the customer/backend information below.
-
-BACKEND CONTEXT:
-${JSON.stringify(
-    context,
-    null,
-    2
-)}
-
-CUSTOMER MESSAGE:
+Customer message:
 ${customerMessage}
-
-Answer the customer directly.
-
-If the backend context confirms the transaction is completed,
-explain that clearly.
-
-If the transaction is pending,
-tell the customer it is still processing.
-
-If the transaction failed,
-explain that it failed and advise the appropriate next step.
-
-If the information is insufficient,
-do not guess.
-
-If human investigation is required,
-say that the issue should be escalated to human support.
-
-Keep the answer short and useful.
 `;
 
-    const response =
-        await axios.post(
-            "https://api.openai.com/v1/responses",
-            {
-                model:
-                    process.env.OPENAI_MODEL ||
-                    "gpt-5.6-luna",
+  const response = await axios.post(
+    `${OPENAI_BASE_URL}/responses`,
+    {
+      model: OPENAI_MODEL,
+      instructions:
+        SUPPORT_SYSTEM_PROMPT,
+      input,
+      max_output_tokens: 700,
+    },
+    {
+      headers: {
+        Authorization:
+          `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 60000,
+    }
+  );
 
-                instructions:
-                    SUPPORT_SYSTEM_PROMPT,
+  let text =
+    response.data?.output_text ||
+    "";
 
-                input:
-                    developerInstructions
-            },
-            {
-                headers: {
-                    Authorization:
-                        `Bearer ${process.env.OPENAI_API_KEY}`,
+  if (!text) {
+    const output =
+      response.data?.output || [];
 
-                    "Content-Type":
-                        "application/json"
-                },
+    const parts = [];
 
-                timeout: 60000
-            }
-        );
-
-    const data =
-        response.data || {};
-
-    const outputText =
-        data.output_text ||
-        data.output
-            ?.flatMap(
-                (item) =>
-                    item.content || []
-            )
-            ?.filter(
-                (item) =>
-                    item.type ===
-                    "output_text"
-            )
-            ?.map(
-                (item) =>
-                    item.text
-            )
-            ?.join("\n") ||
-        "";
-
-    if (!outputText) {
-        throw new Error(
-            "AI returned an empty response"
-        );
+    for (const item of output) {
+      if (item.type === "message") {
+        for (
+          const content of
+          item.content || []
+        ) {
+          if (
+            content.type ===
+              "output_text" &&
+            content.text
+          ) {
+            parts.push(content.text);
+          }
+        }
+      }
     }
 
-    return outputText.trim();
+    text = parts.join("\n").trim();
+  }
+
+  if (!text) {
+    throw new Error(
+      "AI returned an empty response"
+    );
+  }
+
+  return text.trim();
 }
 
-// ======================================================
-// SUPPORT ESCALATION
-// ======================================================
-
-async function createSupportEscalation({
-    uid,
-    agent,
-    message,
-    reason,
-    transactionId = null,
-    fundingReference = null
-}) {
-    const escalationRef =
-        await db
-            .collection(
-                "supportEscalations"
-            )
-            .add({
-                userId: uid,
-
-                agent:
-                    agent || "wale",
-
-                message:
-                    cleanString(message),
-
-                reason:
-                    cleanString(reason) ||
-                    "Manual investigation required",
-
-                transactionId:
-                    transactionId ||
-                    null,
-
-                fundingReference:
-                    fundingReference ||
-                    null,
-
-                status:
-                    "open",
-
-                createdAt:
-                    admin.firestore
-                        .FieldValue
-                        .serverTimestamp(),
-
-                updatedAt:
-                    admin.firestore
-                        .FieldValue
-                        .serverTimestamp()
-            });
-
-    return escalationRef.id;
-}
-
-// ======================================================
-// SUPPORT CHAT HISTORY
-// ======================================================
+// ============================================================
+// SAVE SUPPORT MESSAGE
+// ============================================================
 
 async function saveSupportMessage({
+  uid,
+  agent,
+  role,
+  message,
+}) {
+  const ref = db
+    .collection("supportChats")
+    .doc();
+
+  await ref.set({
     uid,
     agent,
     role,
     message,
-    metadata = {}
-}) {
-    await db
-        .collection(
-            "supportChats"
-        )
-        .add({
-            userId: uid,
+    createdAt:
+      admin.firestore.FieldValue.serverTimestamp(),
+  });
 
-            agent:
-                agent || "wale",
-
-            role,
-
-            message:
-                cleanString(message),
-
-            metadata,
-
-            createdAt:
-                admin.firestore
-                    .FieldValue
-                    .serverTimestamp()
-        });
+  return ref.id;
 }
 
-// ======================================================
-// SUPPORT CHAT
-// ======================================================
+// ============================================================
+// CREATE ESCALATION
+// ============================================================
+
+async function createSupportEscalation({
+  uid,
+  agent,
+  reason,
+  message,
+}) {
+  const ref = db
+    .collection("supportEscalations")
+    .doc();
+
+  await ref.set({
+    uid,
+    agent,
+    reason:
+      cleanString(reason) ||
+      "Customer requested human support",
+    customerMessage: message,
+    status: "open",
+    createdAt:
+      admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt:
+      admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return ref.id;
+}
+
+// ============================================================
+// AI SUPPORT CHAT
+// ============================================================
 
 app.post(
-    "/api/support/chat",
-    checkFirebase,
-    requireFirebaseAuth,
-    checkAIKey,
-    async (req, res) => {
-        try {
-            const {
-                message,
-                agent,
-                transactionId,
-                fundingReference
-            } = req.body;
+  "/api/support/chat",
+  requireFirebaseAuth,
+  checkAIKey,
+  async (req, res) => {
+    try {
+      const uid =
+        req.user.uid;
 
-            const uid =
-                req.user.uid;
+      const {
+        message,
+        agent = "wale",
+      } = req.body;
 
-            const customerMessage =
-                cleanString(message);
+      const customerMessage =
+        cleanString(message);
 
-            if (!customerMessage) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Message is required"
-                });
-            }
+      if (!customerMessage) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Customer message is required",
+        });
+      }
 
-            const selectedAgent =
-                cleanString(agent)
-                    .toLowerCase() ||
-                "wale";
+      const selectedAgent =
+        SUPPORT_AGENTS[agent]
+          ? agent
+          : "wale";
 
-            if (
-                !SUPPORT_AGENTS[
-                    selectedAgent
-                ]
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Invalid support agent",
+      const context =
+        await supportBuildContext(uid);
 
-                    availableAgents:
-                        Object.keys(
-                            SUPPORT_AGENTS
-                        )
-                });
-            }
+      await saveSupportMessage({
+        uid,
+        agent: selectedAgent,
+        role: "user",
+        message: customerMessage,
+      });
 
-            // ------------------------------------------
-            // LOAD CUSTOMER CONTEXT
-            // ------------------------------------------
+      const aiResponse =
+        await generateAISupportResponse({
+          agent: selectedAgent,
+          customerMessage,
+          context,
+        });
 
-            const context =
-                await supportBuildContext({
-                    uid,
+      await saveSupportMessage({
+        uid,
+        agent: selectedAgent,
+        role: "assistant",
+        message: aiResponse,
+      });
 
-                    transactionId:
-                        cleanString(
-                            transactionId
-                        ),
+      return res.json({
+        success: true,
+        agent:
+          SUPPORT_AGENTS[selectedAgent],
+        reply: aiResponse,
+        context: {
+          walletBalance:
+            context.wallet
+              ?.walletBalance ?? 0,
+          recentTransactions:
+            context.recentTransactions,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "AI SUPPORT ERROR:",
+        error?.response?.data || error
+      );
 
-                    fundingReference:
-                        cleanString(
-                            fundingReference
-                        )
-                });
-
-            // ------------------------------------------
-            // SAVE CUSTOMER MESSAGE
-            // ------------------------------------------
-
-            await saveSupportMessage({
-                uid,
-
-                agent:
-                    selectedAgent,
-
-                role:
-                    "user",
-
-                message:
-                    customerMessage,
-
-                metadata: {
-                    transactionId:
-                        transactionId ||
-                        null,
-
-                    fundingReference:
-                        fundingReference ||
-                        null
-                }
-            });
-
-            // ------------------------------------------
-            // GENERATE AI RESPONSE
-            // ------------------------------------------
-
-            const aiResponse =
-                await generateAISupportResponse({
-                    agent:
-                        selectedAgent,
-
-                    customerMessage,
-
-                    context
-                });
-
-            // ------------------------------------------
-            // SAVE AI RESPONSE
-            // ------------------------------------------
-
-            await saveSupportMessage({
-                uid,
-
-                agent:
-                    selectedAgent,
-
-                role:
-                    "assistant",
-
-                message:
-                    aiResponse,
-
-                metadata: {
-                    source:
-                        "ai_support"
-                }
-            });
-
-            return res.json({
-                success: true,
-
-                agent:
-                    SUPPORT_AGENTS[
-                        selectedAgent
-                    ],
-
-                message:
-                    aiResponse,
-
-                context: {
-                    wallet:
-                        context.wallet,
-
-                    transaction:
-                        context.transaction,
-
-                    funding:
-                        context.funding
-                }
-            });
-        } catch (error) {
-            console.error(
-                "SUPPORT CHAT ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to process support request"
-            });
-        }
+      return res.status(500).json({
+        success: false,
+        message:
+          "AI support is temporarily unavailable",
+      });
     }
+  }
 );
 
-// ======================================================
+// ============================================================
 // SUPPORT CHAT HISTORY
-// ======================================================
+// ============================================================
 
 app.get(
-    "/api/support/chat/history",
-    checkFirebase,
-    requireFirebaseAuth,
-    async (req, res) => {
-        try {
-            const uid =
-                req.user.uid;
+  "/api/support/chat/history",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+      const snapshot = await db
+        .collection("supportChats")
+        .where(
+          "uid",
+          "==",
+          req.user.uid
+        )
+        .limit(100)
+        .get();
 
-            const limitValue =
-                Math.min(
-                    Math.max(
-                        Number(
-                            req.query.limit
-                        ) || 50,
-                        1
-                    ),
-                    100
-                );
+      const messages = snapshot.docs
+        .map((doc) => ({
+          id: doc.id,
+          ...formatFirestoreData(
+            doc.data()
+          ),
+        }))
+        .sort((a, b) => {
+          const aTime = a.createdAt
+            ? new Date(
+                a.createdAt
+              ).getTime()
+            : 0;
 
-            const snapshot =
-                await db
-                    .collection(
-                        "supportChats"
-                    )
-                    .where(
-                        "userId",
-                        "==",
-                        uid
-                    )
-                    .orderBy(
-                        "createdAt",
-                        "asc"
-                    )
-                    .limit(
-                        limitValue
-                    )
-                    .get();
+          const bTime = b.createdAt
+            ? new Date(
+                b.createdAt
+              ).getTime()
+            : 0;
 
-            const messages =
-                snapshot.docs.map(
-                    (doc) => ({
-                        id: doc.id,
+          return aTime - bTime;
+        });
 
-                        ...formatFirestoreData(
-                            doc.data()
-                        )
-                    })
-                );
+      return res.json({
+        success: true,
+        messages,
+      });
+    } catch (error) {
+      console.error(
+        "SUPPORT HISTORY ERROR:",
+        error
+      );
 
-            return res.json({
-                success: true,
-
-                messages
-            });
-        } catch (error) {
-            console.error(
-                "SUPPORT HISTORY ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to load support chat history"
-            });
-        }
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
     }
+  }
 );
 
-// ======================================================
-// HUMAN SUPPORT ESCALATION
-// ======================================================
+// ============================================================
+// SUPPORT ESCALATE
+// ============================================================
 
 app.post(
-    "/api/support/escalate",
-    checkFirebase,
-    requireFirebaseAuth,
-    async (req, res) => {
-        try {
-            const {
-                message,
-                reason,
-                agent,
-                transactionId,
-                fundingReference
-            } = req.body;
+  "/api/support/escalate",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+      const {
+        agent = "wale",
+        reason,
+        message,
+      } = req.body;
 
-            const uid =
-                req.user.uid;
+      const selectedAgent =
+        SUPPORT_AGENTS[agent]
+          ? agent
+          : "wale";
 
-            const cleanMessage =
-                cleanString(message);
-
-            if (!cleanMessage) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Escalation message is required"
-                });
-            }
-
-            const escalationId =
-                await createSupportEscalation({
-                    uid,
-
-                    agent:
-                        cleanString(
-                            agent
-                        ) || "wale",
-
-                    message:
-                        cleanMessage,
-
-                    reason,
-
-                    transactionId,
-
-                    fundingReference
-                });
-
-            await saveSupportMessage({
-                uid,
-
-                agent:
-                    cleanString(
-                        agent
-                    ) || "wale",
-
-                role:
-                    "system",
-
-                message:
-                    "Customer support request escalated to human support.",
-
-                metadata: {
-                    escalationId
-                }
-            });
-
-            return res.json({
-                success: true,
-
-                message:
-                    "Your support request has been escalated to human support.",
-
-                escalationId
-            });
-        } catch (error) {
-            console.error(
-                "SUPPORT ESCALATION ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to create support escalation"
-            });
-        }
-    }
-);
-
-// ======================================================
-// SUPPORT ESCALATION STATUS
-// ======================================================
-
-app.get(
-    "/api/support/escalation/:id",
-    checkFirebase,
-    requireFirebaseAuth,
-    async (req, res) => {
-        try {
-            const id =
-                cleanString(
-                    req.params.id
-                );
-
-            const doc =
-                await db
-                    .collection(
-                        "supportEscalations"
-                    )
-                    .doc(id)
-                    .get();
-
-            if (!doc.exists) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Escalation not found"
-                });
-            }
-
-            const data =
-                doc.data();
-
-            if (
-                data.userId !==
-                req.user.uid
-            ) {
-                return res.status(403).json({
-                    success: false,
-                    message:
-                        "You are not authorized to view this escalation"
-                });
-            }
-
-            return res.json({
-                success: true,
-
-                escalation: {
-                    id: doc.id,
-
-                    ...formatFirestoreData(
-                        data
-                    )
-                }
-            });
-        } catch (error) {
-            console.error(
-                "ESCALATION STATUS ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to get escalation status"
-            });
-        }
-    }
-);
-
-// ======================================================
-// EXISTING SUPPORT FUNDING LOOKUP
-// ======================================================
-
-app.get(
-    "/api/support/wallet-funding/:uid/:reference",
-    checkFirebase,
-    requireFirebaseAuth,
-    requireOwnUid,
-    async (req, res) => {
-        try {
-            const {
-                uid,
-                reference
-            } = req.params;
-
-            const funding =
-                await supportGetFunding(
-                    uid,
-                    reference
-                );
-
-            if (!funding) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Funding transaction not found"
-                });
-            }
-
-            return res.json({
-                success: true,
-
-                funding
-            });
-        } catch (error) {
-            console.error(
-                "SUPPORT FUNDING ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to get funding transaction"
-            });
-        }
-    }
-);
-
-// ======================================================
-// EXISTING SUPPORT TRANSACTION LOOKUP
-// ======================================================
-
-app.get(
-    "/api/support/transaction/:uid/:transactionId",
-    checkFirebase,
-    requireFirebaseAuth,
-    requireOwnUid,
-    async (req, res) => {
-        try {
-            const {
-                uid,
-                transactionId
-            } = req.params;
-
-            const transaction =
-                await supportGetTransaction(
-                    uid,
-                    transactionId
-                );
-
-            if (!transaction) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        "Transaction not found"
-                });
-            }
-
-            return res.json({
-                success: true,
-
-                transaction
-            });
-        } catch (error) {
-            console.error(
-                "SUPPORT TRANSACTION ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Unable to get transaction"
-            });
-        }
-    }
-);
-
-// ======================================================
-// HOME
-// ======================================================
-
-app.get(
-    "/",
-    (req, res) => {
-        return res.json({
-            success: true,
-
-            app:
-                "ISMAIL DEEN DATA",
-
-            message:
-                "Backend is running"
+      const escalationId =
+        await createSupportEscalation({
+          uid: req.user.uid,
+          agent: selectedAgent,
+          reason,
+          message,
         });
+
+      return res.json({
+        success: true,
+        message:
+          "Support escalation created",
+        escalationId,
+      });
+    } catch (error) {
+      console.error(
+        "ESCALATION ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
     }
+  }
 );
 
-// ======================================================
-// HEALTH CHECK
-// ======================================================
+// ============================================================
+// GET ESCALATION
+// ============================================================
 
 app.get(
-    "/api/health",
-    (req, res) => {
-        return res.json({
-            success: true,
+  "/api/support/escalation/:id",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+      const doc = await db
+        .collection("supportEscalations")
+        .doc(req.params.id)
+        .get();
 
-            status: "healthy",
-
-            app:
-                "ISMAIL DEEN DATA",
-
-            services: {
-                firebase:
-                    !!db,
-
-                vtpass:
-                    !!(
-                        process.env
-                            .VTPASS_API_KEY &&
-                        process.env
-                            .VTPASS_SECRET_KEY
-                    ),
-
-                paystack:
-                    !!(
-                        process.env
-                            .PAYSTACK_SECRET_KEY
-                    ),
-
-                ai:
-                    !!(
-                        process.env
-                            .OPENAI_API_KEY
-                    )
-            }
-        });
-    }
-);
-
-// ======================================================
-// FIREBASE TEST
-// ======================================================
-
-app.get(
-    "/api/firebase/test",
-    checkFirebase,
-    requireFirebaseAuth,
-    async (req, res) => {
-        try {
-            const uid =
-                req.user.uid;
-
-            const {
-                userData
-            } = await getUser(uid);
-
-            return res.json({
-                success: true,
-
-                firebase:
-                    "connected",
-
-                authenticatedUser:
-                    uid,
-
-                userExists:
-                    !!userData
-            });
-        } catch (error) {
-            console.error(
-                "FIREBASE TEST ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                message:
-                    "Firebase test failed"
-            });
-        }
-    }
-);
-
-// ======================================================
-// 404 HANDLER
-// ======================================================
-
-app.use(
-    (req, res) => {
+      if (!doc.exists) {
         return res.status(404).json({
-            success: false,
-
-            message:
-                "Route not found",
-
-            path:
-                req.originalUrl
+          success: false,
+          message:
+            "Escalation not found",
         });
+      }
+
+      const data = doc.data();
+
+      if (data.uid !== req.user.uid) {
+        return res.status(403).json({
+          success: false,
+          message: "Unauthorized",
+        });
+      }
+
+      return res.json({
+        success: true,
+        escalation: {
+          id: doc.id,
+          ...formatFirestoreData(data),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "GET ESCALATION ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
     }
+  }
 );
 
-// ======================================================
+// ============================================================
+// SUPPORT FUNDING LOOKUP
+// ============================================================
+
+app.get(
+  "/api/support/wallet-funding/:uid/:reference",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      const result =
+        await supportGetFunding(
+          req.params.uid,
+          req.params.reference
+        );
+
+      if (!result) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Funding transaction not found",
+        });
+      }
+
+      return res.json({
+        success: true,
+        funding: result,
+      });
+    } catch (error) {
+      console.error(
+        "SUPPORT FUNDING ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// SUPPORT SERVICE TRANSACTION LOOKUP
+// ============================================================
+
+app.get(
+  "/api/support/transaction/:uid/:transactionId",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      const result =
+        await supportGetTransaction(
+          req.params.uid,
+          req.params.transactionId
+        );
+
+      if (!result) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Service transaction not found",
+        });
+      }
+
+      return res.json({
+        success: true,
+        transaction: result,
+      });
+    } catch (error) {
+      console.error(
+        "SUPPORT TRANSACTION ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// SERVICE TRANSACTION STATUS
+// ============================================================
+
+app.get(
+  "/api/vtpass/transaction/:requestId",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+      const requestId =
+        cleanString(
+          req.params.requestId
+        );
+
+      const doc = await db
+        .collection("serviceTransactions")
+        .doc(requestId)
+        .get();
+
+      if (!doc.exists) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Transaction not found",
+        });
+      }
+
+      const data = doc.data();
+
+      if (data.uid !== req.user.uid) {
+        return res.status(403).json({
+          success: false,
+          message: "Unauthorized",
+        });
+      }
+
+      return res.json({
+        success: true,
+        transaction: {
+          id: doc.id,
+          ...formatFirestoreData(data),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "SERVICE STATUS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// HOME
+// ============================================================
+
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    app: "ISMAIL DEEN DATA",
+    message:
+      "ISMAIL DEEN DATA backend is running",
+    version: "1.0.0",
+  });
+});
+
+// ============================================================
+// HEALTH
+// ============================================================
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    status: "online",
+    app: "ISMAIL DEEN DATA",
+    firebase: Boolean(db),
+    vtpass:
+      Boolean(
+        process.env.VTPASS_API_KEY &&
+        process.env.VTPASS_SECRET_KEY
+      ),
+    paystack:
+      Boolean(
+        process.env.PAYSTACK_SECRET_KEY
+      ),
+    ai:
+      Boolean(
+        process.env.OPENAI_API_KEY
+      ),
+    time: new Date().toISOString(),
+  });
+});
+
+// ============================================================
+// FIREBASE TEST
+// ============================================================
+
+app.get(
+  "/api/firebase/test",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+      if (!checkFirebase(res)) return;
+
+      const snapshot = await db
+        .collection("users")
+        .limit(1)
+        .get();
+
+      return res.json({
+        success: true,
+        firebase: "connected",
+        usersCollectionAccessible: true,
+        sampleCount: snapshot.size,
+      });
+    } catch (error) {
+      console.error(
+        "FIREBASE TEST ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        firebase: "error",
+        message: getErrorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// 404
+// ============================================================
+
+app.use((req, res) => {
+  return res.status(404).json({
+    success: false,
+    message: "Route not found",
+    path: req.originalUrl,
+  });
+});
+
+// ============================================================
 // GLOBAL ERROR HANDLER
-// ======================================================
+// ============================================================
 
 app.use(
-    (error, req, res, next) => {
-        console.error(
-            "GLOBAL ERROR:",
-            error
-        );
+  (error, req, res, next) => {
+    console.error(
+      "GLOBAL ERROR:",
+      error
+    );
 
-        if (
-            res.headersSent
-        ) {
-            return next(error);
-        }
-
-        return res.status(500).json({
-            success: false,
-
-            message:
-                "Internal server error"
-        });
+    if (res.headersSent) {
+      return next(error);
     }
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Internal server error",
+    });
+  }
 );
 
-// ======================================================
+// ============================================================
 // START SERVER
-// ======================================================
+// ============================================================
 
-app.listen(
-    PORT,
-    "0.0.0.0",
-    () => {
-        console.log(
-            `ISMAIL DEEN DATA backend running on port ${PORT}`
-        );
-    }
-);
+app.listen(PORT, () => {
+  console.log(
+    `ISMAIL DEEN DATA server running on port ${PORT}`
+  );
+
+  console.log(
+    `Environment: ${
+      process.env.NODE_ENV || "development"
+    }`
+  );
+
+  console.log(
+    `VTpass: ${VTPASS_BASE_URL}`
+  );
+
+  console.log(
+    `OpenAI model: ${OPENAI_MODEL}`
+  );
+});
