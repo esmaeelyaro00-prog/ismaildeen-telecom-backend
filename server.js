@@ -3728,3 +3728,941 @@ app.listen(
         );
     }
 );
+// ======================================================
+// AI SUPPORT ENGINE
+// ======================================================
+
+const SUPPORT_SYSTEM_PROMPT = `
+You are the AI customer support assistant for ISMAIL DEEN DATA.
+
+Your job is to help customers with:
+- wallet balance questions
+- wallet funding questions
+- Paystack payment status
+- data purchase status
+- airtime purchase status
+- electricity purchase status
+- cable subscription status
+- transaction explanations
+- basic account support
+- escalation to human support
+
+IMPORTANT RULES:
+
+1. Never claim that you changed a wallet balance.
+2. Never debit a customer wallet.
+3. Never credit a customer wallet.
+4. Never issue a refund.
+5. Never delete a transaction.
+6. Never modify financial records.
+7. Never invent a transaction status.
+8. Use only the backend context provided to you.
+9. If information is missing, clearly say that the information is unavailable.
+10. If a transaction needs manual investigation, recommend escalation to human support.
+11. Be polite, concise and helpful.
+12. You may communicate in English or Hausa depending on the customer's language.
+13. Never expose secret API keys, Firebase credentials, Paystack secret keys or VTpass credentials.
+14. Do not expose internal database implementation details unnecessarily.
+`;
+
+// ======================================================
+// OPENAI CONFIGURATION
+// ======================================================
+
+function checkAIKey(req, res, next) {
+    if (!process.env.OPENAI_API_KEY) {
+        return res.status(503).json({
+            success: false,
+            message:
+                "AI support service is not configured"
+        });
+    }
+
+    next();
+}
+
+// ======================================================
+// AI RESPONSE
+// ======================================================
+
+async function generateAISupportResponse({
+    agent,
+    customerMessage,
+    context
+}) {
+    if (!process.env.OPENAI_API_KEY) {
+        throw new Error(
+            "OPENAI_API_KEY is missing"
+        );
+    }
+
+    const agentInfo =
+        SUPPORT_AGENTS[agent] ||
+        SUPPORT_AGENTS.wale;
+
+    const developerInstructions = `
+You are ${agentInfo.name}.
+
+Role:
+${agentInfo.role}
+
+Tone:
+${agentInfo.tone}
+
+Customer support system:
+ISMAIL DEEN DATA
+
+Use the customer/backend information below.
+
+BACKEND CONTEXT:
+${JSON.stringify(
+    context,
+    null,
+    2
+)}
+
+CUSTOMER MESSAGE:
+${customerMessage}
+
+Answer the customer directly.
+
+If the backend context confirms the transaction is completed,
+explain that clearly.
+
+If the transaction is pending,
+tell the customer it is still processing.
+
+If the transaction failed,
+explain that it failed and advise the appropriate next step.
+
+If the information is insufficient,
+do not guess.
+
+If human investigation is required,
+say that the issue should be escalated to human support.
+
+Keep the answer short and useful.
+`;
+
+    const response =
+        await axios.post(
+            "https://api.openai.com/v1/responses",
+            {
+                model:
+                    process.env.OPENAI_MODEL ||
+                    "gpt-5.6-luna",
+
+                instructions:
+                    SUPPORT_SYSTEM_PROMPT,
+
+                input:
+                    developerInstructions
+            },
+            {
+                headers: {
+                    Authorization:
+                        `Bearer ${process.env.OPENAI_API_KEY}`,
+
+                    "Content-Type":
+                        "application/json"
+                },
+
+                timeout: 60000
+            }
+        );
+
+    const data =
+        response.data || {};
+
+    const outputText =
+        data.output_text ||
+        data.output
+            ?.flatMap(
+                (item) =>
+                    item.content || []
+            )
+            ?.filter(
+                (item) =>
+                    item.type ===
+                    "output_text"
+            )
+            ?.map(
+                (item) =>
+                    item.text
+            )
+            ?.join("\n") ||
+        "";
+
+    if (!outputText) {
+        throw new Error(
+            "AI returned an empty response"
+        );
+    }
+
+    return outputText.trim();
+}
+
+// ======================================================
+// SUPPORT ESCALATION
+// ======================================================
+
+async function createSupportEscalation({
+    uid,
+    agent,
+    message,
+    reason,
+    transactionId = null,
+    fundingReference = null
+}) {
+    const escalationRef =
+        await db
+            .collection(
+                "supportEscalations"
+            )
+            .add({
+                userId: uid,
+
+                agent:
+                    agent || "wale",
+
+                message:
+                    cleanString(message),
+
+                reason:
+                    cleanString(reason) ||
+                    "Manual investigation required",
+
+                transactionId:
+                    transactionId ||
+                    null,
+
+                fundingReference:
+                    fundingReference ||
+                    null,
+
+                status:
+                    "open",
+
+                createdAt:
+                    admin.firestore
+                        .FieldValue
+                        .serverTimestamp(),
+
+                updatedAt:
+                    admin.firestore
+                        .FieldValue
+                        .serverTimestamp()
+            });
+
+    return escalationRef.id;
+}
+
+// ======================================================
+// SUPPORT CHAT HISTORY
+// ======================================================
+
+async function saveSupportMessage({
+    uid,
+    agent,
+    role,
+    message,
+    metadata = {}
+}) {
+    await db
+        .collection(
+            "supportChats"
+        )
+        .add({
+            userId: uid,
+
+            agent:
+                agent || "wale",
+
+            role,
+
+            message:
+                cleanString(message),
+
+            metadata,
+
+            createdAt:
+                admin.firestore
+                    .FieldValue
+                    .serverTimestamp()
+        });
+}
+
+// ======================================================
+// SUPPORT CHAT
+// ======================================================
+
+app.post(
+    "/api/support/chat",
+    checkFirebase,
+    requireFirebaseAuth,
+    checkAIKey,
+    async (req, res) => {
+        try {
+            const {
+                message,
+                agent,
+                transactionId,
+                fundingReference
+            } = req.body;
+
+            const uid =
+                req.user.uid;
+
+            const customerMessage =
+                cleanString(message);
+
+            if (!customerMessage) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Message is required"
+                });
+            }
+
+            const selectedAgent =
+                cleanString(agent)
+                    .toLowerCase() ||
+                "wale";
+
+            if (
+                !SUPPORT_AGENTS[
+                    selectedAgent
+                ]
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Invalid support agent",
+
+                    availableAgents:
+                        Object.keys(
+                            SUPPORT_AGENTS
+                        )
+                });
+            }
+
+            // ------------------------------------------
+            // LOAD CUSTOMER CONTEXT
+            // ------------------------------------------
+
+            const context =
+                await supportBuildContext({
+                    uid,
+
+                    transactionId:
+                        cleanString(
+                            transactionId
+                        ),
+
+                    fundingReference:
+                        cleanString(
+                            fundingReference
+                        )
+                });
+
+            // ------------------------------------------
+            // SAVE CUSTOMER MESSAGE
+            // ------------------------------------------
+
+            await saveSupportMessage({
+                uid,
+
+                agent:
+                    selectedAgent,
+
+                role:
+                    "user",
+
+                message:
+                    customerMessage,
+
+                metadata: {
+                    transactionId:
+                        transactionId ||
+                        null,
+
+                    fundingReference:
+                        fundingReference ||
+                        null
+                }
+            });
+
+            // ------------------------------------------
+            // GENERATE AI RESPONSE
+            // ------------------------------------------
+
+            const aiResponse =
+                await generateAISupportResponse({
+                    agent:
+                        selectedAgent,
+
+                    customerMessage,
+
+                    context
+                });
+
+            // ------------------------------------------
+            // SAVE AI RESPONSE
+            // ------------------------------------------
+
+            await saveSupportMessage({
+                uid,
+
+                agent:
+                    selectedAgent,
+
+                role:
+                    "assistant",
+
+                message:
+                    aiResponse,
+
+                metadata: {
+                    source:
+                        "ai_support"
+                }
+            });
+
+            return res.json({
+                success: true,
+
+                agent:
+                    SUPPORT_AGENTS[
+                        selectedAgent
+                    ],
+
+                message:
+                    aiResponse,
+
+                context: {
+                    wallet:
+                        context.wallet,
+
+                    transaction:
+                        context.transaction,
+
+                    funding:
+                        context.funding
+                }
+            });
+        } catch (error) {
+            console.error(
+                "SUPPORT CHAT ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                message:
+                    "Unable to process support request"
+            });
+        }
+    }
+);
+
+// ======================================================
+// SUPPORT CHAT HISTORY
+// ======================================================
+
+app.get(
+    "/api/support/chat/history",
+    checkFirebase,
+    requireFirebaseAuth,
+    async (req, res) => {
+        try {
+            const uid =
+                req.user.uid;
+
+            const limitValue =
+                Math.min(
+                    Math.max(
+                        Number(
+                            req.query.limit
+                        ) || 50,
+                        1
+                    ),
+                    100
+                );
+
+            const snapshot =
+                await db
+                    .collection(
+                        "supportChats"
+                    )
+                    .where(
+                        "userId",
+                        "==",
+                        uid
+                    )
+                    .orderBy(
+                        "createdAt",
+                        "asc"
+                    )
+                    .limit(
+                        limitValue
+                    )
+                    .get();
+
+            const messages =
+                snapshot.docs.map(
+                    (doc) => ({
+                        id: doc.id,
+
+                        ...formatFirestoreData(
+                            doc.data()
+                        )
+                    })
+                );
+
+            return res.json({
+                success: true,
+
+                messages
+            });
+        } catch (error) {
+            console.error(
+                "SUPPORT HISTORY ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                message:
+                    "Unable to load support chat history"
+            });
+        }
+    }
+);
+
+// ======================================================
+// HUMAN SUPPORT ESCALATION
+// ======================================================
+
+app.post(
+    "/api/support/escalate",
+    checkFirebase,
+    requireFirebaseAuth,
+    async (req, res) => {
+        try {
+            const {
+                message,
+                reason,
+                agent,
+                transactionId,
+                fundingReference
+            } = req.body;
+
+            const uid =
+                req.user.uid;
+
+            const cleanMessage =
+                cleanString(message);
+
+            if (!cleanMessage) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Escalation message is required"
+                });
+            }
+
+            const escalationId =
+                await createSupportEscalation({
+                    uid,
+
+                    agent:
+                        cleanString(
+                            agent
+                        ) || "wale",
+
+                    message:
+                        cleanMessage,
+
+                    reason,
+
+                    transactionId,
+
+                    fundingReference
+                });
+
+            await saveSupportMessage({
+                uid,
+
+                agent:
+                    cleanString(
+                        agent
+                    ) || "wale",
+
+                role:
+                    "system",
+
+                message:
+                    "Customer support request escalated to human support.",
+
+                metadata: {
+                    escalationId
+                }
+            });
+
+            return res.json({
+                success: true,
+
+                message:
+                    "Your support request has been escalated to human support.",
+
+                escalationId
+            });
+        } catch (error) {
+            console.error(
+                "SUPPORT ESCALATION ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                message:
+                    "Unable to create support escalation"
+            });
+        }
+    }
+);
+
+// ======================================================
+// SUPPORT ESCALATION STATUS
+// ======================================================
+
+app.get(
+    "/api/support/escalation/:id",
+    checkFirebase,
+    requireFirebaseAuth,
+    async (req, res) => {
+        try {
+            const id =
+                cleanString(
+                    req.params.id
+                );
+
+            const doc =
+                await db
+                    .collection(
+                        "supportEscalations"
+                    )
+                    .doc(id)
+                    .get();
+
+            if (!doc.exists) {
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        "Escalation not found"
+                });
+            }
+
+            const data =
+                doc.data();
+
+            if (
+                data.userId !==
+                req.user.uid
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        "You are not authorized to view this escalation"
+                });
+            }
+
+            return res.json({
+                success: true,
+
+                escalation: {
+                    id: doc.id,
+
+                    ...formatFirestoreData(
+                        data
+                    )
+                }
+            });
+        } catch (error) {
+            console.error(
+                "ESCALATION STATUS ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                message:
+                    "Unable to get escalation status"
+            });
+        }
+    }
+);
+
+// ======================================================
+// EXISTING SUPPORT FUNDING LOOKUP
+// ======================================================
+
+app.get(
+    "/api/support/wallet-funding/:uid/:reference",
+    checkFirebase,
+    requireFirebaseAuth,
+    requireOwnUid,
+    async (req, res) => {
+        try {
+            const {
+                uid,
+                reference
+            } = req.params;
+
+            const funding =
+                await supportGetFunding(
+                    uid,
+                    reference
+                );
+
+            if (!funding) {
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        "Funding transaction not found"
+                });
+            }
+
+            return res.json({
+                success: true,
+
+                funding
+            });
+        } catch (error) {
+            console.error(
+                "SUPPORT FUNDING ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                message:
+                    "Unable to get funding transaction"
+            });
+        }
+    }
+);
+
+// ======================================================
+// EXISTING SUPPORT TRANSACTION LOOKUP
+// ======================================================
+
+app.get(
+    "/api/support/transaction/:uid/:transactionId",
+    checkFirebase,
+    requireFirebaseAuth,
+    requireOwnUid,
+    async (req, res) => {
+        try {
+            const {
+                uid,
+                transactionId
+            } = req.params;
+
+            const transaction =
+                await supportGetTransaction(
+                    uid,
+                    transactionId
+                );
+
+            if (!transaction) {
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        "Transaction not found"
+                });
+            }
+
+            return res.json({
+                success: true,
+
+                transaction
+            });
+        } catch (error) {
+            console.error(
+                "SUPPORT TRANSACTION ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                message:
+                    "Unable to get transaction"
+            });
+        }
+    }
+);
+
+// ======================================================
+// HOME
+// ======================================================
+
+app.get(
+    "/",
+    (req, res) => {
+        return res.json({
+            success: true,
+
+            app:
+                "ISMAIL DEEN DATA",
+
+            message:
+                "Backend is running"
+        });
+    }
+);
+
+// ======================================================
+// HEALTH CHECK
+// ======================================================
+
+app.get(
+    "/api/health",
+    (req, res) => {
+        return res.json({
+            success: true,
+
+            status: "healthy",
+
+            app:
+                "ISMAIL DEEN DATA",
+
+            services: {
+                firebase:
+                    !!db,
+
+                vtpass:
+                    !!(
+                        process.env
+                            .VTPASS_API_KEY &&
+                        process.env
+                            .VTPASS_SECRET_KEY
+                    ),
+
+                paystack:
+                    !!(
+                        process.env
+                            .PAYSTACK_SECRET_KEY
+                    ),
+
+                ai:
+                    !!(
+                        process.env
+                            .OPENAI_API_KEY
+                    )
+            }
+        });
+    }
+);
+
+// ======================================================
+// FIREBASE TEST
+// ======================================================
+
+app.get(
+    "/api/firebase/test",
+    checkFirebase,
+    requireFirebaseAuth,
+    async (req, res) => {
+        try {
+            const uid =
+                req.user.uid;
+
+            const {
+                userData
+            } = await getUser(uid);
+
+            return res.json({
+                success: true,
+
+                firebase:
+                    "connected",
+
+                authenticatedUser:
+                    uid,
+
+                userExists:
+                    !!userData
+            });
+        } catch (error) {
+            console.error(
+                "FIREBASE TEST ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                message:
+                    "Firebase test failed"
+            });
+        }
+    }
+);
+
+// ======================================================
+// 404 HANDLER
+// ======================================================
+
+app.use(
+    (req, res) => {
+        return res.status(404).json({
+            success: false,
+
+            message:
+                "Route not found",
+
+            path:
+                req.originalUrl
+        });
+    }
+);
+
+// ======================================================
+// GLOBAL ERROR HANDLER
+// ======================================================
+
+app.use(
+    (error, req, res, next) => {
+        console.error(
+            "GLOBAL ERROR:",
+            error
+        );
+
+        if (
+            res.headersSent
+        ) {
+            return next(error);
+        }
+
+        return res.status(500).json({
+            success: false,
+
+            message:
+                "Internal server error"
+        });
+    }
+);
+
+// ======================================================
+// START SERVER
+// ======================================================
+
+app.listen(
+    PORT,
+    "0.0.0.0",
+    () => {
+        console.log(
+            `ISMAIL DEEN DATA backend running on port ${PORT}`
+        );
+    }
+);
