@@ -16,11 +16,15 @@ const app = express();
 
 const PORT = Number(process.env.PORT || 10000);
 
-// ============================================================
-// CONFIG
-// ============================================================
-
 const APP_NAME = "ISMAIL DEEN DATA";
+
+const REQUEST_TIMEOUT = Number(
+  process.env.REQUEST_TIMEOUT || 60000
+);
+
+const MINIMUM_FUNDING_AMOUNT = Number(
+  process.env.MINIMUM_FUNDING_AMOUNT || 100
+);
 
 const CHEAPDATAHUB_BASE_URL =
   process.env.CHEAPDATAHUB_BASE_URL ||
@@ -38,13 +42,6 @@ const OPENAI_MODEL =
   process.env.OPENAI_MODEL ||
   "gpt-5.6-luna";
 
-const MINIMUM_FUNDING_AMOUNT = Number(
-  process.env.MINIMUM_FUNDING_AMOUNT || 100
-);
-
-const REQUEST_TIMEOUT =
-  Number(process.env.REQUEST_TIMEOUT || 60000);
-
 // ============================================================
 // EXPRESS
 // ============================================================
@@ -58,6 +55,29 @@ app.use(
 );
 
 // ============================================================
+// WEBHOOK RAW BODY + NORMAL JSON BODY
+// IMPORTANT:
+// Webhooks MUST receive raw body for signature checking.
+// Normal API routes receive JSON.
+// ============================================================
+
+app.use((req, res, next) => {
+  if (
+    req.path === "/api/payment/webhook" ||
+    req.path === "/api/cheapdatahub/webhook"
+  ) {
+    return express.raw({
+      type: "application/json",
+      limit: "1mb",
+    })(req, res, next);
+  }
+
+  return express.json({
+    limit: "1mb",
+  })(req, res, next);
+});
+
+// ============================================================
 // HELPERS
 // ============================================================
 
@@ -69,22 +89,28 @@ function cleanPhone(value) {
   return cleanString(value).replace(/\s+/g, "");
 }
 
-function isValidPhone(phone) {
-  return /^(0\d{10}|234\d{10})$/.test(phone);
+function isValidPhone(value) {
+  const phone = cleanPhone(value);
+
+  return /^(0\d{10}|234\d{10})$/.test(
+    phone
+  );
 }
 
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+    cleanString(value)
+  );
 }
 
 function toMoney(value) {
-  const n = Number(value);
+  const number = Number(value);
 
-  if (!Number.isFinite(n)) {
+  if (!Number.isFinite(number)) {
     return 0;
   }
 
-  return Math.round(n * 100) / 100;
+  return Math.round(number * 100) / 100;
 }
 
 function generateRequestId(prefix = "IDD") {
@@ -104,7 +130,8 @@ function getErrorMessage(error) {
 }
 
 function normalizeStatus(status) {
-  const value = cleanString(status).toLowerCase();
+  const value =
+    cleanString(status).toLowerCase();
 
   if (
     [
@@ -148,22 +175,20 @@ function normalizeStatus(status) {
 }
 
 function isProviderSuccess(data) {
-  const status = cleanString(
-    data?.status
-  ).toLowerCase();
+  const status =
+    cleanString(data?.status).toLowerCase();
 
-  return (
-    status === "true" ||
-    status === "successful" ||
-    status === "success" ||
-    status === "completed"
-  );
+  return [
+    "true",
+    "successful",
+    "success",
+    "completed",
+  ].includes(status);
 }
 
 function isProviderFailed(data) {
-  const status = cleanString(
-    data?.status
-  ).toLowerCase();
+  const status =
+    cleanString(data?.status).toLowerCase();
 
   return [
     "false",
@@ -221,12 +246,25 @@ function initializeFirebase() {
   if (
     process.env.FIREBASE_SERVICE_ACCOUNT_JSON
   ) {
-    const serviceAccount = JSON.parse(
-      process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-    );
+    try {
+      const serviceAccount =
+        JSON.parse(
+          process.env
+            .FIREBASE_SERVICE_ACCOUNT_JSON
+        );
 
-    credential =
-      admin.credential.cert(serviceAccount);
+      credential =
+        admin.credential.cert(
+          serviceAccount
+        );
+    } catch (error) {
+      console.error(
+        "Invalid FIREBASE_SERVICE_ACCOUNT_JSON:",
+        error.message
+      );
+
+      throw error;
+    }
   } else if (
     process.env.FIREBASE_SERVICE_ACCOUNT_PATH
   ) {
@@ -263,7 +301,8 @@ function checkFirebase(res) {
   if (!db) {
     res.status(503).json({
       success: false,
-      message: "Firebase is not initialized",
+      message:
+        "Firebase is not initialized",
     });
 
     return false;
@@ -290,10 +329,14 @@ async function requireFirebaseAuth(
       });
     }
 
-    const header =
+    const authorization =
       req.headers.authorization || "";
 
-    if (!header.startsWith("Bearer ")) {
+    if (
+      !authorization.startsWith(
+        "Bearer "
+      )
+    ) {
       return res.status(401).json({
         success: false,
         message:
@@ -302,7 +345,9 @@ async function requireFirebaseAuth(
     }
 
     const token =
-      header.substring(7).trim();
+      authorization
+        .substring(7)
+        .trim();
 
     if (!token) {
       return res.status(401).json({
@@ -313,7 +358,9 @@ async function requireFirebaseAuth(
     }
 
     const decoded =
-      await admin.auth().verifyIdToken(token);
+      await admin
+        .auth()
+        .verifyIdToken(token);
 
     req.user = decoded;
 
@@ -345,7 +392,8 @@ function requireOwnUid(
   if (!uid) {
     return res.status(400).json({
       success: false,
-      message: "User ID is required",
+      message:
+        "User ID is required",
     });
   }
 
@@ -376,6 +424,7 @@ async function getUser(uid) {
 
   return {
     userRef: ref,
+
     userData: snapshot.exists
       ? snapshot.data()
       : null,
@@ -397,22 +446,36 @@ async function writeWalletHistory({
   reason,
 }) {
   const ref =
-    db.collection("walletHistory").doc();
+    db.collection(
+      "walletHistory"
+    ).doc();
 
   await ref.set({
     uid,
+
     transactionId:
       transactionId || null,
+
     reference:
       reference || null,
+
     type,
-    amount: toMoney(amount),
+
+    amount:
+      toMoney(amount),
+
     balanceAfter:
       toMoney(balanceAfter),
-    method: method || null,
-    reason: reason || null,
+
+    method:
+      method || null,
+
+    reason:
+      reason || null,
+
     createdAt:
-      admin.firestore.FieldValue
+      admin.firestore
+        .FieldValue
         .serverTimestamp(),
   });
 
@@ -420,7 +483,7 @@ async function writeWalletHistory({
 }
 
 // ============================================================
-// CHEAPDATAHUB CONFIG
+// CHEAPDATAHUB
 // ============================================================
 
 function cheapDataHubHeaders() {
@@ -430,8 +493,10 @@ function cheapDataHubHeaders() {
   return {
     Authorization:
       `Bearer ${key}`,
+
     "Content-Type":
       "application/json",
+
     Accept:
       "application/json",
   };
@@ -455,10 +520,6 @@ function checkCheapDataHub(
   next();
 }
 
-// ============================================================
-// CHEAPDATAHUB ENDPOINTS
-// ============================================================
-
 const CDH = {
   airtime:
     `${CHEAPDATAHUB_BASE_URL}/airtime/purchase/`,
@@ -480,44 +541,71 @@ const CDH = {
 };
 
 // ============================================================
-// CHEAPDATAHUB PROVIDER IDS
-// Put actual IDs in .env
+// PROVIDER IDS
 // ============================================================
 
 const AIRTIME_PROVIDER_IDS = {
   mtn:
-    process.env.CDH_MTN_PROVIDER_ID || "",
+    process.env.CDH_MTN_PROVIDER_ID ||
+    "",
+
   airtel:
-    process.env.CDH_AIRTEL_PROVIDER_ID || "",
+    process.env.CDH_AIRTEL_PROVIDER_ID ||
+    "",
+
   glo:
-    process.env.CDH_GLO_PROVIDER_ID || "",
+    process.env.CDH_GLO_PROVIDER_ID ||
+    "",
+
   "9mobile":
-    process.env.CDH_9MOBILE_PROVIDER_ID || "",
+    process.env.CDH_9MOBILE_PROVIDER_ID ||
+    "",
+
   etisalat:
-    process.env.CDH_9MOBILE_PROVIDER_ID || "",
+    process.env.CDH_9MOBILE_PROVIDER_ID ||
+    "",
 };
 
 const ELECTRICITY_DISCO_IDS = {
   abuja:
-    process.env.CDH_ABUJA_DISCO_ID || "",
+    process.env.CDH_ABUJA_DISCO_ID ||
+    "",
+
   benin:
-    process.env.CDH_BENIN_DISCO_ID || "",
+    process.env.CDH_BENIN_DISCO_ID ||
+    "",
+
   eko:
-    process.env.CDH_EKO_DISCO_ID || "",
+    process.env.CDH_EKO_DISCO_ID ||
+    "",
+
   enugu:
-    process.env.CDH_ENUGU_DISCO_ID || "",
+    process.env.CDH_ENUGU_DISCO_ID ||
+    "",
+
   ibadan:
-    process.env.CDH_IBADAN_DISCO_ID || "",
+    process.env.CDH_IBADAN_DISCO_ID ||
+    "",
+
   ikeja:
-    process.env.CDH_IKEJA_DISCO_ID || "",
+    process.env.CDH_IKEJA_DISCO_ID ||
+    "",
+
   jos:
-    process.env.CDH_JOS_DISCO_ID || "",
+    process.env.CDH_JOS_DISCO_ID ||
+    "",
+
   kaduna:
-    process.env.CDH_KADUNA_DISCO_ID || "",
+    process.env.CDH_KADUNA_DISCO_ID ||
+    "",
+
   kano:
-    process.env.CDH_KANO_DISCO_ID || "",
+    process.env.CDH_KANO_DISCO_ID ||
+    "",
+
   yola:
-    process.env.CDH_YOLA_DISCO_ID || "",
+    process.env.CDH_YOLA_DISCO_ID ||
+    "",
 };
 
 // ============================================================
@@ -535,6 +623,7 @@ async function cheapDataHubPost(
       {
         headers:
           cheapDataHubHeaders(),
+
         timeout:
           REQUEST_TIMEOUT,
       }
@@ -552,7 +641,9 @@ async function cheapDataHubGet(
       {
         headers:
           cheapDataHubHeaders(),
-        timeout: 30000,
+
+        timeout:
+          30000,
       }
     );
 
@@ -588,7 +679,9 @@ async function reserveWalletPurchase({
 
       if (existing.exists) {
         return {
-          alreadyExists: true,
+          alreadyExists:
+            true,
+
           data:
             existing.data(),
         };
@@ -655,11 +748,14 @@ async function reserveWalletPurchase({
         serviceRef,
         {
           uid,
+
           requestId,
+
           amount:
             purchaseAmount,
 
           type,
+
           provider:
             provider || null,
 
@@ -688,22 +784,31 @@ async function reserveWalletPurchase({
       );
 
       return {
-        alreadyExists: false,
+        alreadyExists:
+          false,
 
         data: {
           uid,
+
           requestId,
+
           amount:
             purchaseAmount,
+
           type,
+
           provider:
             provider || null,
+
           status:
             "provider_pending",
+
           previousBalance:
             balance,
+
           balanceAfterDebit:
             newBalance,
+
           metadata:
             metadata || {},
         },
@@ -713,7 +818,7 @@ async function reserveWalletPurchase({
 }
 
 // ============================================================
-// MARK PURCHASE PROCESSING
+// MARK PROCESSING
 // ============================================================
 
 async function markProviderProcessing(
@@ -729,7 +834,8 @@ async function markProviderProcessing(
     status:
       "processing",
 
-    providerResponse,
+    providerResponse:
+      providerResponse || null,
 
     updatedAt:
       admin.firestore
@@ -765,7 +871,14 @@ async function markPurchaseCompleted(
 
   if (
     data.status ===
-      "completed"
+    "completed"
+  ) {
+    return data;
+  }
+
+  if (
+    data.status ===
+    "refunded"
   ) {
     return data;
   }
@@ -774,7 +887,8 @@ async function markPurchaseCompleted(
     status:
       "completed",
 
-    providerResponse,
+    providerResponse:
+      providerResponse || null,
 
     completedAt:
       admin.firestore
@@ -834,7 +948,9 @@ async function refundFailedPurchase(
         service.uid;
 
       const amount =
-        toMoney(service.amount);
+        toMoney(
+          service.amount
+        );
 
       const userRef =
         db.collection(
@@ -853,8 +969,7 @@ async function refundFailedPurchase(
       }
 
       const user =
-        userSnapshot.data() ||
-        {};
+        userSnapshot.data() || {};
 
       const currentBalance =
         Number(
@@ -887,9 +1002,10 @@ async function refundFailedPurchase(
             "refunded",
 
           refundReason:
-            reason,
+            reason || null,
 
-          providerResponse,
+          providerResponse:
+            providerResponse || null,
 
           refundedAt:
             admin.firestore
@@ -932,18 +1048,22 @@ async function refundFailedPurchase(
           balanceAfter:
             newBalance,
 
-          reason,
+          reason:
+            reason || null,
 
           createdAt:
             admin.firestore
               .FieldValue
               .serverTimestamp(),
         },
-        { merge: true }
+        {
+          merge: true,
+        }
       );
 
       return {
         ...service,
+
         status:
           "refunded",
 
@@ -983,6 +1103,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Invalid phone number",
         });
@@ -999,18 +1120,11 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Valid bundle_id is required",
         });
       }
-
-      /*
-       IMPORTANT:
-       amount is accepted for wallet debit,
-       but in production you should obtain
-       the exact CheapDataHub price from your
-       plan catalogue and compare it here.
-      */
 
       const purchaseAmount =
         toMoney(amount);
@@ -1020,12 +1134,13 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Valid amount is required",
         });
       }
 
-      const requestId =
+      const requestIdValue =
         cleanString(
           request_id
         ) ||
@@ -1036,16 +1151,23 @@ app.post(
       const reserved =
         await reserveWalletPurchase({
           uid,
-          requestId,
+
+          requestId:
+            requestIdValue,
+
           amount:
             purchaseAmount,
+
           type:
             "data",
+
           provider:
             "cheapdatahub",
+
           metadata: {
             bundle_id:
               bundleId,
+
             phone:
               phoneNumber,
           },
@@ -1054,16 +1176,23 @@ app.post(
       if (
         reserved.alreadyExists
       ) {
+        const status =
+          normalizeStatus(
+            reserved.data.status
+          );
+
         return res.json({
           success:
-            normalizeStatus(
-              reserved.data
-                .status
-            ) ===
+            status ===
             "completed",
 
           message:
             "This request already exists",
+
+          requestId:
+            requestIdValue,
+
+          status,
 
           transaction:
             formatFirestoreData(
@@ -1092,6 +1221,9 @@ app.post(
         providerResponse =
           providerError?.response
             ?.data || {
+            status:
+              "failed",
+
             message:
               getErrorMessage(
                 providerError
@@ -1105,14 +1237,9 @@ app.post(
         )
       ) {
         await markProviderProcessing(
-          requestId,
+          requestIdValue,
           providerResponse
         );
-
-        /*
-         Do NOT immediately refund.
-         CheapDataHub uses webhook updates.
-        */
 
         return res.json({
           success: true,
@@ -1121,7 +1248,8 @@ app.post(
             providerResponse.message ||
             "Data purchase accepted",
 
-          requestId,
+          requestId:
+            requestIdValue,
 
           status:
             "processing",
@@ -1137,8 +1265,10 @@ app.post(
         )
       ) {
         await refundFailedPurchase(
-          requestId,
+          requestIdValue,
+
           "CheapDataHub rejected the data transaction",
+
           providerResponse
         );
 
@@ -1149,14 +1279,16 @@ app.post(
             providerResponse.message ||
             "Data purchase failed. Wallet refunded.",
 
-          requestId,
+          requestId:
+            requestIdValue,
+
           provider:
             providerResponse,
         });
       }
 
       await markProviderProcessing(
-        requestId,
+        requestIdValue,
         providerResponse
       );
 
@@ -1166,7 +1298,8 @@ app.post(
         message:
           "Data transaction is being processed",
 
-        requestId,
+        requestId:
+          requestIdValue,
 
         status:
           "processing",
@@ -1183,6 +1316,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -1227,6 +1361,7 @@ app.post(
       if (!providerId) {
         return res.status(400).json({
           success: false,
+
           message:
             "CheapDataHub provider ID for this network is not configured",
         });
@@ -1239,6 +1374,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Invalid phone number",
         });
@@ -1252,12 +1388,13 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Invalid airtime amount",
         });
       }
 
-      const requestId =
+      const requestIdValue =
         cleanString(
           request_id
         ) ||
@@ -1268,18 +1405,26 @@ app.post(
       const reserved =
         await reserveWalletPurchase({
           uid,
-          requestId,
+
+          requestId:
+            requestIdValue,
+
           amount:
             purchaseAmount,
+
           type:
             "airtime",
+
           provider:
             "cheapdatahub",
+
           metadata: {
             network:
               cleanNetwork,
+
             provider_id:
               providerId,
+
             phone:
               phoneNumber,
           },
@@ -1288,16 +1433,23 @@ app.post(
       if (
         reserved.alreadyExists
       ) {
+        const status =
+          normalizeStatus(
+            reserved.data.status
+          );
+
         return res.json({
           success:
-            normalizeStatus(
-              reserved.data
-                .status
-            ) ===
+            status ===
             "completed",
 
           message:
             "This request already exists",
+
+          requestId:
+            requestIdValue,
+
+          status,
 
           transaction:
             formatFirestoreData(
@@ -1329,6 +1481,9 @@ app.post(
         providerResponse =
           providerError?.response
             ?.data || {
+            status:
+              "failed",
+
             message:
               getErrorMessage(
                 providerError
@@ -1342,7 +1497,7 @@ app.post(
         )
       ) {
         await markProviderProcessing(
-          requestId,
+          requestIdValue,
           providerResponse
         );
 
@@ -1353,7 +1508,8 @@ app.post(
             providerResponse.message ||
             "Airtime purchase accepted",
 
-          requestId,
+          requestId:
+            requestIdValue,
 
           status:
             "processing",
@@ -1369,8 +1525,10 @@ app.post(
         )
       ) {
         await refundFailedPurchase(
-          requestId,
+          requestIdValue,
+
           "CheapDataHub rejected the airtime transaction",
+
           providerResponse
         );
 
@@ -1381,7 +1539,8 @@ app.post(
             providerResponse.message ||
             "Airtime purchase failed. Wallet refunded.",
 
-          requestId,
+          requestId:
+            requestIdValue,
 
           provider:
             providerResponse,
@@ -1389,7 +1548,7 @@ app.post(
       }
 
       await markProviderProcessing(
-        requestId,
+        requestIdValue,
         providerResponse
       );
 
@@ -1399,7 +1558,8 @@ app.post(
         message:
           "Airtime transaction is being processed",
 
-        requestId,
+        requestId:
+          requestIdValue,
 
         status:
           "processing",
@@ -1416,6 +1576,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -1459,6 +1620,7 @@ app.post(
       if (!discoId) {
         return res.status(400).json({
           success: false,
+
           message:
             "CheapDataHub electricity provider ID is not configured",
         });
@@ -1472,6 +1634,7 @@ app.post(
       if (!meter) {
         return res.status(400).json({
           success: false,
+
           message:
             "Meter number is required",
         });
@@ -1493,6 +1656,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Meter type must be prepaid or postpaid",
         });
@@ -1506,6 +1670,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Invalid electricity amount",
         });
@@ -1522,12 +1687,13 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Invalid phone number",
         });
       }
 
-      const requestId =
+      const requestIdValue =
         cleanString(
           request_id
         ) ||
@@ -1538,22 +1704,32 @@ app.post(
       const reserved =
         await reserveWalletPurchase({
           uid,
-          requestId,
+
+          requestId:
+            requestIdValue,
+
           amount:
             purchaseAmount,
+
           type:
             "electricity",
+
           provider:
             "cheapdatahub",
+
           metadata: {
             disco:
               cleanDisco,
+
             disco_id:
               discoId,
+
             meter_number:
               meter,
+
             meter_type:
               cleanMeterType,
+
             phone:
               phoneNumber,
           },
@@ -1562,16 +1738,23 @@ app.post(
       if (
         reserved.alreadyExists
       ) {
+        const status =
+          normalizeStatus(
+            reserved.data.status
+          );
+
         return res.json({
           success:
-            normalizeStatus(
-              reserved.data
-                .status
-            ) ===
+            status ===
             "completed",
 
           message:
             "This request already exists",
+
+          requestId:
+            requestIdValue,
+
+          status,
 
           transaction:
             formatFirestoreData(
@@ -1610,6 +1793,9 @@ app.post(
         providerResponse =
           providerError?.response
             ?.data || {
+            status:
+              "failed",
+
             message:
               getErrorMessage(
                 providerError
@@ -1623,7 +1809,7 @@ app.post(
         )
       ) {
         await markProviderProcessing(
-          requestId,
+          requestIdValue,
           providerResponse
         );
 
@@ -1634,7 +1820,8 @@ app.post(
             providerResponse.message ||
             "Electricity transaction accepted",
 
-          requestId,
+          requestId:
+            requestIdValue,
 
           status:
             "processing",
@@ -1650,8 +1837,10 @@ app.post(
         )
       ) {
         await refundFailedPurchase(
-          requestId,
+          requestIdValue,
+
           "CheapDataHub rejected the electricity transaction",
+
           providerResponse
         );
 
@@ -1662,7 +1851,8 @@ app.post(
             providerResponse.message ||
             "Electricity purchase failed. Wallet refunded.",
 
-          requestId,
+          requestId:
+            requestIdValue,
 
           provider:
             providerResponse,
@@ -1670,7 +1860,7 @@ app.post(
       }
 
       await markProviderProcessing(
-        requestId,
+        requestIdValue,
         providerResponse
       );
 
@@ -1680,7 +1870,8 @@ app.post(
         message:
           "Electricity transaction is being processed",
 
-        requestId,
+        requestId:
+          requestIdValue,
 
         status:
           "processing",
@@ -1697,6 +1888,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -1737,6 +1929,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Valid plan_id is required",
         });
@@ -1750,6 +1943,7 @@ app.post(
       if (!card) {
         return res.status(400).json({
           success: false,
+
           message:
             "Smartcard number is required",
         });
@@ -1763,6 +1957,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Valid cable amount is required",
         });
@@ -1779,12 +1974,13 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Invalid phone number",
         });
       }
 
-      const requestId =
+      const requestIdValue =
         cleanString(
           request_id
         ) ||
@@ -1795,18 +1991,26 @@ app.post(
       const reserved =
         await reserveWalletPurchase({
           uid,
-          requestId,
+
+          requestId:
+            requestIdValue,
+
           amount:
             purchaseAmount,
+
           type:
             "cable",
+
           provider:
             "cheapdatahub",
+
           metadata: {
             plan_id:
               planId,
+
             cardnumber:
               card,
+
             phone:
               phoneNumber,
           },
@@ -1815,16 +2019,23 @@ app.post(
       if (
         reserved.alreadyExists
       ) {
+        const status =
+          normalizeStatus(
+            reserved.data.status
+          );
+
         return res.json({
           success:
-            normalizeStatus(
-              reserved.data
-                .status
-            ) ===
+            status ===
             "completed",
 
           message:
             "This request already exists",
+
+          requestId:
+            requestIdValue,
+
+          status,
 
           transaction:
             formatFirestoreData(
@@ -1857,6 +2068,9 @@ app.post(
         providerResponse =
           providerError?.response
             ?.data || {
+            status:
+              "failed",
+
             message:
               getErrorMessage(
                 providerError
@@ -1870,7 +2084,7 @@ app.post(
         )
       ) {
         await markProviderProcessing(
-          requestId,
+          requestIdValue,
           providerResponse
         );
 
@@ -1881,7 +2095,8 @@ app.post(
             providerResponse.message ||
             "Cable transaction accepted",
 
-          requestId,
+          requestId:
+            requestIdValue,
 
           status:
             "processing",
@@ -1897,8 +2112,10 @@ app.post(
         )
       ) {
         await refundFailedPurchase(
-          requestId,
+          requestIdValue,
+
           "CheapDataHub rejected the cable transaction",
+
           providerResponse
         );
 
@@ -1909,7 +2126,8 @@ app.post(
             providerResponse.message ||
             "Cable purchase failed. Wallet refunded.",
 
-          requestId,
+          requestId:
+            requestIdValue,
 
           provider:
             providerResponse,
@@ -1917,7 +2135,7 @@ app.post(
       }
 
       await markProviderProcessing(
-        requestId,
+        requestIdValue,
         providerResponse
       );
 
@@ -1927,7 +2145,8 @@ app.post(
         message:
           "Cable transaction is being processed",
 
-        requestId,
+        requestId:
+          requestIdValue,
 
         status:
           "processing",
@@ -1944,6 +2163,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -1970,6 +2190,7 @@ app.get(
 
       return res.json({
         success: true,
+
         provider:
           data,
       });
@@ -1982,6 +2203,7 @@ app.get(
 
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -2008,6 +2230,7 @@ app.get(
 
       return res.json({
         success: true,
+
         provider:
           data,
       });
@@ -2020,6 +2243,7 @@ app.get(
 
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -2033,29 +2257,8 @@ app.get(
 // CHEAPDATAHUB WEBHOOK
 // ============================================================
 
-/*
-  IMPORTANT:
-
-  Set:
-  CHEAPDATAHUB_WEBHOOK_SECRET
-
-  CheapDataHub documentation requires
-  webhook signature verification.
-
-  The exact signature header/algorithm must
-  match what CheapDataHub gives you in your
-  reseller dashboard/documentation.
-
-  Therefore this endpoint supports a configurable
-  header and algorithm rather than inventing one.
-*/
-
 app.post(
   "/api/cheapdatahub/webhook",
-  express.raw({
-    type:
-      "application/json",
-  }),
   async (req, res) => {
     try {
       const secret =
@@ -2081,7 +2284,7 @@ app.post(
 
       const received =
         req.headers[
-          signatureHeader
+          signatureHeader.toLowerCase()
         ];
 
       if (!received) {
@@ -2106,8 +2309,25 @@ app.post(
           .update(req.body)
           .digest("hex");
 
+      const receivedBuffer =
+        Buffer.from(
+          String(received),
+          "utf8"
+        );
+
+      const expectedBuffer =
+        Buffer.from(
+          expected,
+          "utf8"
+        );
+
       if (
-        received !== expected
+        receivedBuffer.length !==
+        expectedBuffer.length ||
+        !crypto.timingSafeEqual(
+          receivedBuffer,
+          expectedBuffer
+        )
       ) {
         return res
           .status(401)
@@ -2136,6 +2356,7 @@ app.post(
       if (!reference) {
         return res.json({
           success: true,
+
           ignored: true,
         });
       }
@@ -2182,6 +2403,7 @@ app.post(
 
         return res.json({
           success: true,
+
           ignored: true,
         });
       }
@@ -2208,26 +2430,24 @@ app.post(
       ) {
         await refundFailedPurchase(
           transactionDoc.id,
+
           "CheapDataHub webhook reported failed transaction",
+
           event
         );
       } else if (
         normalized ===
         "refunded"
       ) {
-        /*
-          If CheapDataHub itself reports refunded,
-          we record it. The wallet refund logic
-          must not be run twice.
-        */
-
         if (
           transaction.status !==
-            "refunded"
+          "refunded"
         ) {
           await refundFailedPurchase(
             transactionDoc.id,
+
             "CheapDataHub webhook reported refunded transaction",
+
             event
           );
         }
@@ -2249,6 +2469,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           "Webhook processing failed",
       });
@@ -2266,8 +2487,9 @@ app.get(
   requireOwnUid,
   async (req, res) => {
     try {
-      if (!checkFirebase(res))
+      if (!checkFirebase(res)) {
         return;
+      }
 
       const {
         userData,
@@ -2278,6 +2500,7 @@ app.get(
       if (!userData) {
         return res.status(404).json({
           success: false,
+
           message:
             "User not found",
         });
@@ -2295,6 +2518,7 @@ app.get(
     } catch (error) {
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -2323,6 +2547,7 @@ app.get(
       if (!userData) {
         return res.status(404).json({
           success: false,
+
           message:
             "User not found",
         });
@@ -2358,6 +2583,7 @@ app.get(
     } catch (error) {
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -2425,11 +2651,13 @@ app.get(
 
       return res.json({
         success: true,
+
         history,
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -2453,6 +2681,15 @@ app.get(
           req.params.requestId
         );
 
+      if (!requestId) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Request ID is required",
+        });
+      }
+
       const doc =
         await db
           .collection(
@@ -2464,6 +2701,7 @@ app.get(
       if (!doc.exists) {
         return res.status(404).json({
           success: false,
+
           message:
             "Transaction not found",
         });
@@ -2478,6 +2716,7 @@ app.get(
       ) {
         return res.status(403).json({
           success: false,
+
           message:
             "Unauthorized",
         });
@@ -2497,6 +2736,7 @@ app.get(
     } catch (error) {
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -2517,6 +2757,9 @@ function paystackHeaders() {
 
     "Content-Type":
       "application/json",
+
+    Accept:
+      "application/json",
   };
 }
 
@@ -2530,6 +2773,7 @@ function checkPaystack(
   ) {
     return res.status(503).json({
       success: false,
+
       message:
         "Paystack secret key is not configured",
     });
@@ -2539,7 +2783,7 @@ function checkPaystack(
 }
 
 // ============================================================
-// PAYSTACK PROCESS SUCCESS
+// PROCESS SUCCESSFUL PAYMENT
 // ============================================================
 
 async function processSuccessfulPayment(
@@ -2571,12 +2815,12 @@ async function processSuccessfulPayment(
   const transactionRef =
     transactionDoc.ref;
 
-  const transaction =
+  const fundingTransaction =
     transactionDoc.data();
 
   const uid =
-    transaction.uid ||
-    transaction.userId;
+    fundingTransaction.uid ||
+    fundingTransaction.userId;
 
   if (!uid) {
     throw new Error(
@@ -2591,7 +2835,8 @@ async function processSuccessfulPayment(
 
   const expectedAmount =
     Number(
-      transaction.amount || 0
+      fundingTransaction.amount ||
+        0
     );
 
   if (
@@ -2617,36 +2862,6 @@ async function processSuccessfulPayment(
       const freshData =
         fresh.data() || {};
 
-      if (
-        freshData.status ===
-        "completed"
-      ) {
-        const userRef =
-          db.collection(
-            "users"
-          ).doc(uid);
-
-        const user =
-          await transactionDb.get(
-            userRef
-          );
-
-        return {
-          alreadyProcessed:
-            true,
-
-          newBalance:
-            Number(
-              user.data()
-                ?.walletBalance ||
-                0
-            ),
-
-          amount:
-            expectedAmount,
-        };
-      }
-
       const userRef =
         db.collection(
           "users"
@@ -2669,6 +2884,22 @@ async function processSuccessfulPayment(
             ?.walletBalance ||
             0
         );
+
+      if (
+        freshData.status ===
+        "completed"
+      ) {
+        return {
+          alreadyProcessed:
+            true,
+
+          newBalance:
+            currentBalance,
+
+          amount:
+            expectedAmount,
+        };
+      }
 
       const newBalance =
         toMoney(
@@ -2723,7 +2954,7 @@ async function processSuccessfulPayment(
         db.collection(
           "walletHistory"
         ).doc(
-          reference
+          `credit-${reference}`
         );
 
       transactionDb.set(
@@ -2753,7 +2984,9 @@ async function processSuccessfulPayment(
               .FieldValue
               .serverTimestamp(),
         },
-        { merge: true }
+        {
+          merge: true,
+        }
       );
 
       return {
@@ -2775,40 +3008,66 @@ async function processSuccessfulPayment(
 
 app.post(
   "/api/payment/webhook",
-  express.raw({
-    type:
-      "application/json",
-  }),
   async (req, res) => {
     try {
+      const secret =
+        process.env.PAYSTACK_SECRET_KEY;
+
+      if (!secret) {
+        return res
+          .status(503)
+          .send(
+            "Paystack secret key not configured"
+          );
+      }
+
       const signature =
         req.headers[
           "x-paystack-signature"
         ];
 
       if (!signature) {
-        return res.status(401).send(
-          "Missing signature"
-        );
+        return res
+          .status(401)
+          .send(
+            "Missing signature"
+          );
       }
 
       const hash =
         crypto
           .createHmac(
             "sha512",
-            process.env
-              .PAYSTACK_SECRET_KEY
+            secret
           )
           .update(req.body)
           .digest("hex");
 
-      if (
-        hash !==
-        signature
-      ) {
-        return res.status(401).send(
-          "Invalid signature"
+      const receivedBuffer =
+        Buffer.from(
+          String(signature),
+          "utf8"
         );
+
+      const expectedBuffer =
+        Buffer.from(
+          hash,
+          "utf8"
+        );
+
+      if (
+        receivedBuffer.length !==
+          expectedBuffer.length ||
+        !crypto.timingSafeEqual(
+          receivedBuffer,
+          expectedBuffer
+        )
+      ) {
+        return res
+          .status(401)
+          .send(
+            "Invalid signature"
+          );
       }
 
       const event =
@@ -2824,17 +3083,18 @@ app.post(
       ) {
         return res.json({
           success: true,
+
           ignored: true,
         });
       }
 
       const reference =
-        event?.data
-          ?.reference;
+        event?.data?.reference;
 
       if (!reference) {
         return res.json({
           success: true,
+
           ignored: true,
         });
       }
@@ -2855,6 +3115,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           "Webhook processing failed",
       });
@@ -2885,6 +3146,7 @@ app.post(
       ) {
         return res.status(403).json({
           success: false,
+
           message:
             "Unauthorized user",
         });
@@ -2905,6 +3167,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           message:
             "Valid email is required",
         });
@@ -3023,6 +3286,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -3047,6 +3311,15 @@ app.get(
           req.params.reference
         );
 
+      if (!reference) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Payment reference is required",
+        });
+      }
+
       const snapshot =
         await db
           .collection(
@@ -3063,6 +3336,7 @@ app.get(
       if (snapshot.empty) {
         return res.status(404).json({
           success: false,
+
           message:
             "Funding transaction not found",
         });
@@ -3082,6 +3356,7 @@ app.get(
       ) {
         return res.status(403).json({
           success: false,
+
           message:
             "Unauthorized transaction",
         });
@@ -3116,8 +3391,10 @@ app.get(
 
         return res.json({
           success: true,
+
           status:
             "success",
+
           result,
         });
       }
@@ -3140,6 +3417,7 @@ app.get(
 
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -3179,6 +3457,7 @@ app.get(
       if (snapshot.empty) {
         return res.status(404).json({
           success: false,
+
           message:
             "Funding transaction not found",
         });
@@ -3198,6 +3477,7 @@ app.get(
       ) {
         return res.status(403).json({
           success: false,
+
           message:
             "Unauthorized transaction",
         });
@@ -3214,6 +3494,7 @@ app.get(
     } catch (error) {
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -3224,7 +3505,7 @@ app.get(
 );
 
 // ============================================================
-// SUPPORT
+// SUPPORT AGENTS
 // ============================================================
 
 const SUPPORT_AGENTS = {
@@ -3380,6 +3661,7 @@ function checkAI(
   ) {
     return res.status(503).json({
       success: false,
+
       message:
         "AI support is not configured",
     });
@@ -3539,6 +3821,10 @@ ${message}
   return text.trim();
 }
 
+// ============================================================
+// AI SUPPORT CHAT
+// ============================================================
+
 app.post(
   "/api/support/chat",
   requireFirebaseAuth,
@@ -3560,6 +3846,7 @@ app.post(
       if (!message) {
         return res.status(400).json({
           success: false,
+
           message:
             "Customer message is required",
         });
@@ -3573,7 +3860,9 @@ app.post(
       const reply =
         await generateAIResponse({
           agent,
+
           message,
+
           context,
         });
 
@@ -3606,6 +3895,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           "AI support is temporarily unavailable",
       });
@@ -3614,7 +3904,7 @@ app.post(
 );
 
 // ============================================================
-// ESCALATION
+// SUPPORT ESCALATION
 // ============================================================
 
 app.post(
@@ -3672,6 +3962,7 @@ app.post(
     } catch (error) {
       return res.status(500).json({
         success: false,
+
         message:
           getErrorMessage(
             error
@@ -3795,26 +4086,6 @@ app.get(
 );
 
 // ============================================================
-// JSON BODY PARSER
-// ============================================================
-
-/*
-  IMPORTANT:
-  Webhooks using express.raw() MUST be
-  registered before express.json().
-
-  We already registered both webhook routes
-  above, so JSON parser can now be enabled.
-*/
-
-app.use(
-  express.json({
-    limit:
-      "1mb",
-  })
-);
-
-// ============================================================
 // 404
 // ============================================================
 
@@ -3866,7 +4137,7 @@ app.use(
 );
 
 // ============================================================
-// START
+// START SERVER
 // ============================================================
 
 app.listen(
