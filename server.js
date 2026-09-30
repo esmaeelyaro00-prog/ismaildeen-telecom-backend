@@ -76,7 +76,7 @@ app.use(
 // FIREBASE ADMIN
 // ============================================================
 
-function initializeFirebase() {
+ function initializeFirebase() {
   if (admin.apps.length > 0) {
     return admin.app();
   }
@@ -95,24 +95,20 @@ function initializeFirebase() {
     );
   }
 
-  else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-    serviceAccount =
-      require(
-        process.env.FIREBASE_SERVICE_ACCOUNT_PATH
-      );
-  }
-
   else {
-    throw new Error(
-      "Firebase service account is not configured"
-    );
+    const serviceAccountPath =
+      process.env.FIREBASE_SERVICE_ACCOUNT_PATH ||
+      "/etc/secrets/firebase-service-account.json";
+
+    serviceAccount =
+      require(serviceAccountPath);
   }
 
   return admin.initializeApp({
     credential:
       admin.credential.cert(serviceAccount),
   });
-}
+ }
 
 try {
   initializeFirebase();
