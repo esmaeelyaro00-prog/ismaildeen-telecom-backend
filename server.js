@@ -1,7 +1,20 @@
 // ============================================================
 // ISMAIL DEEN DATA
-// FULL SERVER.JS
-// Firebase + Firestore + Paystack + CheapDataHub + AI Support
+// FRESH SERVER.JS
+//
+// WALLET FUNDING:
+// Paystack Dedicated Virtual Account (DVA)
+//
+// CUSTOMER DEPOSIT CHARGE:
+// ₦30 fixed
+//
+// EXAMPLE:
+// User sends ₦1,000
+// App charge = ₦30
+// Wallet receives = ₦970
+//
+// NEVER PUT PAYSTACK SECRET KEY OR CHEAPDATAHUB API KEY
+// INSIDE THE ANDROID APP.
 // ============================================================
 
 require("dotenv").config();
@@ -9,73 +22,115 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
-const admin = require("firebase-admin");
 const crypto = require("crypto");
+const admin = require("firebase-admin");
 
 const app = express();
 
-const PORT = Number(process.env.PORT || 10000);
+// ============================================================
+// CONFIG
+// ============================================================
 
-const APP_NAME = "ISMAIL DEEN DATA";
+const PORT = Number(process.env.PORT || 3000);
 
-const REQUEST_TIMEOUT = Number(
-  process.env.REQUEST_TIMEOUT || 60000
-);
-
-const MINIMUM_FUNDING_AMOUNT = Number(
-  process.env.MINIMUM_FUNDING_AMOUNT || 100
-);
-
-const CHEAPDATAHUB_BASE_URL =
-  process.env.CHEAPDATAHUB_BASE_URL ||
-  "https://www.cheapdatahub.ng/api/v1/resellers";
+const APP_NAME =
+  process.env.APP_NAME || "ISMAIL DEEN DATA";
 
 const PAYSTACK_BASE_URL =
   process.env.PAYSTACK_BASE_URL ||
   "https://api.paystack.co";
 
-const OPENAI_BASE_URL =
-  process.env.OPENAI_BASE_URL ||
-  "https://api.openai.com/v1";
+const CHEAPDATAHUB_BASE_URL =
+  process.env.CHEAPDATAHUB_BASE_URL ||
+  "https://www.cheapdatahub.ng/api/v1";
 
-const OPENAI_MODEL =
-  process.env.OPENAI_MODEL ||
-  "gpt-5.6-luna";
+const PAYSTACK_SECRET_KEY =
+  process.env.PAYSTACK_SECRET_KEY || "";
+
+const CHEAPDATAHUB_API_KEY =
+  process.env.CHEAPDATAHUB_API_KEY || "";
+
+const PAYSTACK_DVA_BANK =
+  process.env.PAYSTACK_DVA_BANK ||
+  "wema-bank";
+
+// CUSTOMER CHARGE
+const DEPOSIT_FEE = 30;
+
+// Minimum amount customer can deposit
+const MIN_DEPOSIT =
+  Number(process.env.MIN_DEPOSIT || 100);
 
 // ============================================================
-// EXPRESS
+// CORS
 // ============================================================
-
-app.set("trust proxy", 1);
 
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || true,
+    origin: true,
+    credentials: false,
   })
 );
 
 // ============================================================
-// WEBHOOK RAW BODY + NORMAL JSON BODY
-// IMPORTANT:
-// Webhooks MUST receive raw body for signature checking.
-// Normal API routes receive JSON.
+// FIREBASE ADMIN
 // ============================================================
 
-app.use((req, res, next) => {
-  if (
-    req.path === "/api/payment/webhook" ||
-    req.path === "/api/cheapdatahub/webhook"
-  ) {
-    return express.raw({
-      type: "application/json",
-      limit: "1mb",
-    })(req, res, next);
+function initializeFirebase() {
+  if (admin.apps.length > 0) {
+    return admin.app();
   }
 
-  return express.json({
-    limit: "1mb",
-  })(req, res, next);
-});
+  let serviceAccount;
+
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    serviceAccount = JSON.parse(
+      process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+    );
+  }
+
+  else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    serviceAccount = JSON.parse(
+      process.env.FIREBASE_SERVICE_ACCOUNT
+    );
+  }
+
+  else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+    serviceAccount =
+      require(
+        process.env.FIREBASE_SERVICE_ACCOUNT_PATH
+      );
+  }
+
+  else {
+    throw new Error(
+      "Firebase service account is not configured"
+    );
+  }
+
+  return admin.initializeApp({
+    credential:
+      admin.credential.cert(serviceAccount),
+  });
+}
+
+try {
+  initializeFirebase();
+
+  console.log(
+    "Firebase Admin initialized successfully"
+  );
+}
+
+catch (error) {
+  console.error(
+    "Firebase initialization error:",
+    error.message
+  );
+}
+
+const db = () =>
+  admin.firestore();
 
 // ============================================================
 // HELPERS
@@ -86,24 +141,18 @@ function cleanString(value) {
 }
 
 function cleanPhone(value) {
-  return cleanString(value).replace(/\s+/g, "");
+  return cleanString(value).replace(/\D/g, "");
 }
 
-function isValidPhone(value) {
-  const phone = cleanPhone(value);
-
-  return /^(0\d{10}|234\d{10})$/.test(
-    phone
-  );
+function isValidPhone(phone) {
+  return /^0\d{10}$/.test(phone);
 }
 
-function isValidEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
-    cleanString(value)
-  );
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function toMoney(value) {
+function money(value) {
   const number = Number(value);
 
   if (!Number.isFinite(number)) {
@@ -113,206 +162,75 @@ function toMoney(value) {
   return Math.round(number * 100) / 100;
 }
 
-function generateRequestId(prefix = "IDD") {
-  return `${prefix}-${Date.now()}-${crypto
-    .randomBytes(6)
-    .toString("hex")}`;
+function requestId(prefix = "IDD") {
+  return (
+    prefix +
+    "-" +
+    Date.now() +
+    "-" +
+    crypto
+      .randomBytes(5)
+      .toString("hex")
+  );
 }
 
-function getErrorMessage(error) {
+function errorMessage(error) {
   return (
     error?.response?.data?.message ||
     error?.response?.data?.error ||
-    error?.response?.data?.detail ||
     error?.message ||
-    "Unknown error"
+    "Unknown server error"
   );
 }
 
-function normalizeStatus(status) {
-  const value =
-    cleanString(status).toLowerCase();
+// ============================================================
+// PAYSTACK HEADERS
+// ============================================================
 
-  if (
-    [
-      "successful",
-      "success",
-      "completed",
-      "delivered",
-    ].includes(value)
-  ) {
-    return "completed";
+function paystackHeaders() {
+  if (!PAYSTACK_SECRET_KEY) {
+    throw new Error(
+      "PAYSTACK_SECRET_KEY is missing"
+    );
   }
 
-  if (
-    [
-      "initiated",
-      "processing",
-      "pending",
-      "provider_pending",
-      "unknown",
-    ].includes(value)
-  ) {
-    return "pending";
-  }
+  return {
+    Authorization:
+      `Bearer ${PAYSTACK_SECRET_KEY}`,
 
-  if (
-    [
-      "failed",
-      "failure",
-      "cancelled",
-      "canceled",
-    ].includes(value)
-  ) {
-    return "failed";
-  }
+    "Content-Type":
+      "application/json",
 
-  if (value === "refunded") {
-    return "refunded";
-  }
-
-  return value || "unknown";
-}
-
-function isProviderSuccess(data) {
-  const status =
-    cleanString(data?.status).toLowerCase();
-
-  return [
-    "true",
-    "successful",
-    "success",
-    "completed",
-  ].includes(status);
-}
-
-function isProviderFailed(data) {
-  const status =
-    cleanString(data?.status).toLowerCase();
-
-  return [
-    "false",
-    "failed",
-    "failure",
-    "cancelled",
-    "canceled",
-  ].includes(status);
-}
-
-function formatFirestoreData(data) {
-  if (!data || typeof data !== "object") {
-    return data;
-  }
-
-  const result = { ...data };
-
-  const fields = [
-    "createdAt",
-    "updatedAt",
-    "paidAt",
-    "verifiedAt",
-    "completedAt",
-    "failedAt",
-    "refundedAt",
-  ];
-
-  for (const field of fields) {
-    if (
-      result[field] &&
-      typeof result[field].toDate === "function"
-    ) {
-      result[field] =
-        result[field].toDate().toISOString();
-    }
-  }
-
-  return result;
+    Accept:
+      "application/json",
+  };
 }
 
 // ============================================================
-// FIREBASE
+// CHEAPDATAHUB HEADERS
 // ============================================================
 
-let db = null;
-
-function initializeFirebase() {
-  if (admin.apps.length > 0) {
-    db = admin.firestore();
-    return;
+function cheapDataHubHeaders() {
+  if (!CHEAPDATAHUB_API_KEY) {
+    throw new Error(
+      "CHEAPDATAHUB_API_KEY is missing"
+    );
   }
 
-  let credential;
+  return {
+    Authorization:
+      `Bearer ${CHEAPDATAHUB_API_KEY}`,
 
-  if (
-    process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-  ) {
-    try {
-      const serviceAccount =
-        JSON.parse(
-          process.env
-            .FIREBASE_SERVICE_ACCOUNT_JSON
-        );
+    "Content-Type":
+      "application/json",
 
-      credential =
-        admin.credential.cert(
-          serviceAccount
-        );
-    } catch (error) {
-      console.error(
-        "Invalid FIREBASE_SERVICE_ACCOUNT_JSON:",
-        error.message
-      );
-
-      throw error;
-    }
-  } else if (
-    process.env.FIREBASE_SERVICE_ACCOUNT_PATH
-  ) {
-    credential =
-      admin.credential.cert(
-        require(
-          process.env.FIREBASE_SERVICE_ACCOUNT_PATH
-        )
-      );
-  } else {
-    const defaultPath =
-      "/etc/secrets/firebase-service-account.json";
-
-    credential =
-      admin.credential.cert(
-        require(defaultPath)
-      );
-  }
-
-  admin.initializeApp({
-    credential,
-  });
-
-  db = admin.firestore();
-
-  console.log(
-    "Firebase Admin initialized successfully"
-  );
-}
-
-initializeFirebase();
-
-function checkFirebase(res) {
-  if (!db) {
-    res.status(503).json({
-      success: false,
-      message:
-        "Firebase is not initialized",
-    });
-
-    return false;
-  }
-
-  return true;
+    Accept:
+      "application/json",
+  };
 }
 
 // ============================================================
-// FIREBASE AUTH
+// FIREBASE AUTHENTICATION
 // ============================================================
 
 async function requireFirebaseAuth(
@@ -321,39 +239,29 @@ async function requireFirebaseAuth(
   next
 ) {
   try {
-    if (!db) {
-      return res.status(503).json({
-        success: false,
-        message:
-          "Firebase is not initialized",
-      });
-    }
-
-    const authorization =
-      req.headers.authorization || "";
+    const header =
+      cleanString(
+        req.headers.authorization
+      );
 
     if (
-      !authorization.startsWith(
-        "Bearer "
-      )
+      !header.startsWith("Bearer ")
     ) {
       return res.status(401).json({
         success: false,
         message:
-          "Authorization token is required",
+          "Authentication required",
       });
     }
 
     const token =
-      authorization
-        .substring(7)
-        .trim();
+      header.substring(7).trim();
 
     if (!token) {
       return res.status(401).json({
         success: false,
         message:
-          "Invalid authorization token",
+          "Firebase ID token is missing",
       });
     }
 
@@ -365,19 +273,25 @@ async function requireFirebaseAuth(
     req.user = decoded;
 
     next();
-  } catch (error) {
+  }
+
+  catch (error) {
     console.error(
-      "AUTH ERROR:",
+      "Firebase authentication error:",
       error.message
     );
 
     return res.status(401).json({
       success: false,
       message:
-        "Invalid or expired Firebase token",
+        "Invalid or expired authentication token",
     });
   }
 }
+
+// ============================================================
+// ONLY ALLOW USER TO ACCESS HIS OWN UID
+// ============================================================
 
 function requireOwnUid(
   req,
@@ -385,26 +299,16 @@ function requireOwnUid(
   next
 ) {
   const uid =
-    req.params.uid ||
-    req.body?.uid ||
-    req.query?.uid;
-
-  if (!uid) {
-    return res.status(400).json({
-      success: false,
-      message:
-        "User ID is required",
-    });
-  }
+    cleanString(req.params.uid);
 
   if (
-    !req.user ||
-    req.user.uid !== uid
+    !uid ||
+    uid !== req.user.uid
   ) {
     return res.status(403).json({
       success: false,
       message:
-        "You are not authorized to access this account",
+        "You can only access your own account",
     });
   }
 
@@ -416,275 +320,649 @@ function requireOwnUid(
 // ============================================================
 
 async function getUser(uid) {
-  const ref =
-    db.collection("users").doc(uid);
+  const snap =
+    await db()
+      .collection("users")
+      .doc(uid)
+      .get();
 
-  const snapshot =
-    await ref.get();
-
-  return {
-    userRef: ref,
-
-    userData: snapshot.exists
-      ? snapshot.data()
-      : null,
-  };
-}
-
-// ============================================================
-// WALLET HISTORY
-// ============================================================
-
-async function writeWalletHistory({
-  uid,
-  transactionId,
-  reference,
-  type,
-  amount,
-  balanceAfter,
-  method,
-  reason,
-}) {
-  const ref =
-    db.collection(
-      "walletHistory"
-    ).doc();
-
-  await ref.set({
-    uid,
-
-    transactionId:
-      transactionId || null,
-
-    reference:
-      reference || null,
-
-    type,
-
-    amount:
-      toMoney(amount),
-
-    balanceAfter:
-      toMoney(balanceAfter),
-
-    method:
-      method || null,
-
-    reason:
-      reason || null,
-
-    createdAt:
-      admin.firestore
-        .FieldValue
-        .serverTimestamp(),
-  });
-
-  return ref.id;
-}
-
-// ============================================================
-// CHEAPDATAHUB
-// ============================================================
-
-function cheapDataHubHeaders() {
-  const key =
-    process.env.CHEAPDATAHUB_API_KEY;
-
-  return {
-    Authorization:
-      `Bearer ${key}`,
-
-    "Content-Type":
-      "application/json",
-
-    Accept:
-      "application/json",
-  };
-}
-
-function checkCheapDataHub(
-  req,
-  res,
-  next
-) {
-  if (
-    !process.env.CHEAPDATAHUB_API_KEY
-  ) {
-    return res.status(503).json({
-      success: false,
-      message:
-        "CheapDataHub API key is not configured",
-    });
+  if (!snap.exists) {
+    return null;
   }
 
-  next();
+  return {
+    id: snap.id,
+    ...snap.data(),
+  };
 }
 
-const CDH = {
-  airtime:
-    `${CHEAPDATAHUB_BASE_URL}/airtime/purchase/`,
-
-  data:
-    `${CHEAPDATAHUB_BASE_URL}/data/purchase/`,
-
-  electricity:
-    `${CHEAPDATAHUB_BASE_URL}/electricity/purchase/`,
-
-  cable:
-    `${CHEAPDATAHUB_BASE_URL}/cable/purchase/`,
-
-  balance:
-    `${CHEAPDATAHUB_BASE_URL}/wallet/balance/`,
-
-  transactions:
-    `${CHEAPDATAHUB_BASE_URL}/transactions/`,
-};
-
 // ============================================================
-// PROVIDER IDS
+// CREATE PAYSTACK CUSTOMER
 // ============================================================
 
-const AIRTIME_PROVIDER_IDS = {
-  mtn:
-    process.env.CDH_MTN_PROVIDER_ID ||
-    "",
-
-  airtel:
-    process.env.CDH_AIRTEL_PROVIDER_ID ||
-    "",
-
-  glo:
-    process.env.CDH_GLO_PROVIDER_ID ||
-    "",
-
-  "9mobile":
-    process.env.CDH_9MOBILE_PROVIDER_ID ||
-    "",
-
-  etisalat:
-    process.env.CDH_9MOBILE_PROVIDER_ID ||
-    "",
-};
-
-const ELECTRICITY_DISCO_IDS = {
-  abuja:
-    process.env.CDH_ABUJA_DISCO_ID ||
-    "",
-
-  benin:
-    process.env.CDH_BENIN_DISCO_ID ||
-    "",
-
-  eko:
-    process.env.CDH_EKO_DISCO_ID ||
-    "",
-
-  enugu:
-    process.env.CDH_ENUGU_DISCO_ID ||
-    "",
-
-  ibadan:
-    process.env.CDH_IBADAN_DISCO_ID ||
-    "",
-
-  ikeja:
-    process.env.CDH_IKEJA_DISCO_ID ||
-    "",
-
-  jos:
-    process.env.CDH_JOS_DISCO_ID ||
-    "",
-
-  kaduna:
-    process.env.CDH_KADUNA_DISCO_ID ||
-    "",
-
-  kano:
-    process.env.CDH_KANO_DISCO_ID ||
-    "",
-
-  yola:
-    process.env.CDH_YOLA_DISCO_ID ||
-    "",
-};
-
-// ============================================================
-// CHEAPDATAHUB REQUEST
-// ============================================================
-
-async function cheapDataHubPost(
-  url,
-  payload
-) {
+async function createPaystackCustomer({
+  uid,
+  email,
+  firstName,
+  lastName,
+  phone,
+}) {
   const response =
     await axios.post(
-      url,
-      payload,
+      `${PAYSTACK_BASE_URL}/customer`,
+      {
+        email,
+        first_name:
+          firstName || undefined,
+        last_name:
+          lastName || undefined,
+        phone:
+          phone || undefined,
+
+        metadata: {
+          uid,
+          app:
+            APP_NAME,
+        },
+      },
       {
         headers:
-          cheapDataHubHeaders(),
-
-        timeout:
-          REQUEST_TIMEOUT,
-      }
-    );
-
-  return response.data;
-}
-
-async function cheapDataHubGet(
-  url
-) {
-  const response =
-    await axios.get(
-      url,
-      {
-        headers:
-          cheapDataHubHeaders(),
+          paystackHeaders(),
 
         timeout:
           30000,
       }
     );
 
-  return response.data;
+  if (
+    !response.data?.status
+  ) {
+    throw new Error(
+      response.data?.message ||
+      "Paystack customer creation failed"
+    );
+  }
+
+  return response.data.data;
 }
 
 // ============================================================
-// RESERVE WALLET PURCHASE
+// CREATE DEDICATED VIRTUAL ACCOUNT
 // ============================================================
 
-async function reserveWalletPurchase({
-  uid,
-  requestId,
-  amount,
-  type,
-  provider,
-  metadata,
+async function createDedicatedVirtualAccount({
+  customerCode,
+  firstName,
+  lastName,
+  phone,
 }) {
-  const serviceRef =
-    db.collection(
-      "serviceTransactions"
-    ).doc(requestId);
+  const response =
+    await axios.post(
+      `${PAYSTACK_BASE_URL}/dedicated_account`,
+      {
+        customer:
+          customerCode,
 
-  const userRef =
-    db.collection("users").doc(uid);
+        preferred_bank:
+          PAYSTACK_DVA_BANK,
 
-  return db.runTransaction(
-    async (transaction) => {
-      const existing =
-        await transaction.get(
-          serviceRef
+        first_name:
+          firstName || undefined,
+
+        last_name:
+          lastName || undefined,
+
+        phone:
+          phone || undefined,
+      },
+      {
+        headers:
+          paystackHeaders(),
+
+        timeout:
+          30000,
+      }
+    );
+
+  if (
+    !response.data?.status
+  ) {
+    throw new Error(
+      response.data?.message ||
+      "Dedicated virtual account creation failed"
+    );
+  }
+
+  return response.data.data;
+}
+
+// ============================================================
+// NORMALIZE VIRTUAL ACCOUNT
+// ============================================================
+
+function normalizeVirtualAccount(
+  account
+) {
+  return {
+    id:
+      account?.id || null,
+
+    accountNumber:
+      account?.account_number ||
+      "",
+
+    accountName:
+      account?.account_name ||
+      "",
+
+    bankName:
+      account?.bank?.name ||
+      account?.bank_name ||
+      "",
+
+    bankSlug:
+      account?.bank?.slug ||
+      account?.bank_slug ||
+      "",
+
+    currency:
+      account?.currency ||
+      "NGN",
+
+    active:
+      account?.active !== false,
+  };
+}
+
+// ============================================================
+// CREATE VIRTUAL ACCOUNT
+// ============================================================
+
+app.post(
+  "/api/wallet/virtual-account",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+      const uid =
+        req.user.uid;
+
+      const userRef =
+        db()
+          .collection("users")
+          .doc(uid);
+
+      const userSnap =
+        await userRef.get();
+
+      const userData =
+        userSnap.exists
+          ? userSnap.data()
+          : {};
+
+      // ------------------------------------------------------
+      // ALREADY HAS ACCOUNT
+      // ------------------------------------------------------
+
+      if (
+        userData.virtualAccount
+          ?.accountNumber
+      ) {
+        return res.json({
+          success: true,
+
+          existing: true,
+
+          virtualAccount:
+            userData.virtualAccount,
+        });
+      }
+
+      // ------------------------------------------------------
+      // CUSTOMER DETAILS
+      // ------------------------------------------------------
+
+      const email =
+        cleanString(
+          req.body?.email ||
+          userData.email ||
+          req.user.email
+        ).toLowerCase();
+
+      const firstName =
+        cleanString(
+          req.body?.firstName ||
+          userData.firstName ||
+          userData.name ||
+          "Customer"
         );
 
-      if (existing.exists) {
-        return {
-          alreadyExists:
-            true,
+      const lastName =
+        cleanString(
+          req.body?.lastName ||
+          userData.lastName ||
+          ""
+        );
 
-          data:
-            existing.data(),
+      const phone =
+        cleanPhone(
+          req.body?.phone ||
+          userData.phone ||
+          ""
+        );
+
+      if (
+        !isValidEmail(email)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid email is required",
+        });
+      }
+
+      if (
+        !isValidPhone(phone)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid 11-digit Nigerian phone number is required",
+        });
+      }
+
+      // ------------------------------------------------------
+      // PAYSTACK CUSTOMER
+      // ------------------------------------------------------
+
+      let customerCode =
+        userData.paystackCustomerCode ||
+        "";
+
+      if (!customerCode) {
+        const customer =
+          await createPaystackCustomer({
+            uid,
+            email,
+            firstName,
+            lastName,
+            phone,
+          });
+
+        customerCode =
+          customer?.customer_code ||
+          "";
+
+        if (!customerCode) {
+          throw new Error(
+            "Paystack customer code was not returned"
+          );
+        }
+
+        await userRef.set(
+          {
+            email,
+            firstName,
+            lastName,
+            phone,
+
+            paystackCustomerCode:
+              customerCode,
+
+            updatedAt:
+              admin.firestore
+                .FieldValue
+                .serverTimestamp(),
+          },
+          {
+            merge: true,
+          }
+        );
+      }
+
+      // ------------------------------------------------------
+      // DEDICATED ACCOUNT
+      // ------------------------------------------------------
+
+      const account =
+        await createDedicatedVirtualAccount({
+          customerCode,
+          firstName,
+          lastName,
+          phone,
+        });
+
+      const virtualAccount =
+        normalizeVirtualAccount(
+          account
+        );
+
+      if (
+        !virtualAccount.accountNumber
+      ) {
+        return res.status(202).json({
+          success: true,
+          pending: true,
+          message:
+            "Virtual account is still being created. Please try again shortly.",
+        });
+      }
+
+      // ------------------------------------------------------
+      // SAVE ACCOUNT
+      // ------------------------------------------------------
+
+      await userRef.set(
+        {
+          email,
+          firstName,
+          lastName,
+          phone,
+
+          paystackCustomerCode:
+            customerCode,
+
+          virtualAccount,
+
+          updatedAt:
+            admin.firestore
+              .FieldValue
+              .serverTimestamp(),
+        },
+        {
+          merge: true,
+        }
+      );
+
+      return res.json({
+        success: true,
+        existing: false,
+        virtualAccount,
+      });
+    }
+
+    catch (error) {
+      console.error(
+        "Virtual account error:",
+        error?.response?.data ||
+        error.message
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          errorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// GET VIRTUAL ACCOUNT
+// ============================================================
+
+app.get(
+  "/api/wallet/virtual-account/:uid",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      const user =
+        await getUser(
+          req.params.uid
+        );
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "User not found",
+        });
+      }
+
+      return res.json({
+        success: true,
+
+        virtualAccount:
+          user.virtualAccount ||
+          null,
+      });
+    }
+
+    catch (error) {
+      return res.status(500).json({
+        success: false,
+        message:
+          errorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// PAYSTACK WEBHOOK SIGNATURE
+// ============================================================
+
+function verifyPaystackSignature(
+  rawBody,
+  signature
+) {
+  if (
+    !signature ||
+    !PAYSTACK_SECRET_KEY
+  ) {
+    return false;
+  }
+
+  const expected =
+    crypto
+      .createHmac(
+        "sha512",
+        PAYSTACK_SECRET_KEY
+      )
+      .update(rawBody)
+      .digest("hex");
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(expected),
+      Buffer.from(signature)
+    );
+  }
+
+  catch {
+    return false;
+  }
+}
+
+// ============================================================
+// FIND USER BY DEDICATED ACCOUNT
+// ============================================================
+
+async function findUserByVirtualAccount(
+  accountNumber
+) {
+  const snapshot =
+    await db()
+      .collection("users")
+      .where(
+        "virtualAccount.accountNumber",
+        "==",
+        accountNumber
+      )
+      .limit(1)
+      .get();
+
+  if (
+    snapshot.empty
+  ) {
+    return null;
+  }
+
+  const doc =
+    snapshot.docs[0];
+
+  return {
+    id: doc.id,
+    ref: doc.ref,
+    data: doc.data(),
+  };
+}
+
+// ============================================================
+// PROCESS DVA PAYMENT
+//
+// ₦1,000 received
+// ₦30 app charge
+// ₦970 wallet credit
+// ============================================================
+
+async function processVirtualAccountPayment(
+  payment
+) {
+  const reference =
+    cleanString(
+      payment?.reference
+    );
+
+  const grossAmount =
+    money(
+      Number(payment?.amount || 0) /
+      100
+    );
+
+  const receiverAccount =
+    cleanString(
+      payment
+        ?.authorization
+        ?.receiver_bank_account_number ||
+      payment
+        ?.receiver_bank_account_number
+    );
+
+  if (!reference) {
+    throw new Error(
+      "Paystack reference is missing"
+    );
+  }
+
+  if (
+    payment?.status &&
+    payment.status !== "success"
+  ) {
+    return {
+      credited: false,
+      reason:
+        "Payment was not successful",
+    };
+  }
+
+  if (
+    grossAmount <= 0
+  ) {
+    throw new Error(
+      "Invalid payment amount"
+    );
+  }
+
+  if (!receiverAccount) {
+    throw new Error(
+      "Receiver virtual account number was not found"
+    );
+  }
+
+  if (
+    grossAmount < MIN_DEPOSIT
+  ) {
+    return {
+      credited: false,
+
+      reason:
+        `Minimum deposit is ₦${MIN_DEPOSIT}`,
+    };
+  }
+
+  // ----------------------------------------------------------
+  // FIND ACCOUNT OWNER
+  // ----------------------------------------------------------
+
+  const user =
+    await findUserByVirtualAccount(
+      receiverAccount
+    );
+
+  if (!user) {
+    throw new Error(
+      `No user found for account ${receiverAccount}`
+    );
+  }
+
+  const uid =
+    user.id;
+
+  const userRef =
+    user.ref;
+
+  // ----------------------------------------------------------
+  // ₦30 APP CHARGE
+  // ----------------------------------------------------------
+
+  const fee =
+    DEPOSIT_FEE;
+
+  const creditAmount =
+    money(
+      grossAmount - fee
+    );
+
+  if (
+    creditAmount <= 0
+  ) {
+    return {
+      credited: false,
+
+      reason:
+        "Amount is too small after ₦30 charge",
+    };
+  }
+
+  // ----------------------------------------------------------
+  // FIRESTORE TRANSACTION
+  // ----------------------------------------------------------
+
+  const transactionRef =
+    db()
+      .collection("walletTransactions")
+      .doc(`dva-${reference}`);
+
+  const historyRef =
+    db()
+      .collection("walletHistory")
+      .doc(`dva-${reference}`);
+
+  let result;
+
+  await db().runTransaction(
+    async (transaction) => {
+
+      const oldTransaction =
+        await transaction.get(
+          transactionRef
+        );
+
+      // Prevent duplicate credit
+      if (
+        oldTransaction.exists &&
+        oldTransaction.data()
+          ?.status === "completed"
+      ) {
+        result = {
+          credited: false,
+          duplicate: true,
+          message:
+            "Payment already credited",
         };
+
+        return;
       }
 
       const userSnapshot =
@@ -692,364 +970,169 @@ async function reserveWalletPurchase({
           userRef
         );
 
-      if (!userSnapshot.exists) {
+      if (
+        !userSnapshot.exists
+      ) {
         throw new Error(
-          "User account not found"
+          "User document not found"
         );
       }
 
-      const user =
+      const data =
         userSnapshot.data() || {};
 
-      const balance =
-        Number(
-          user.walletBalance || 0
+      const balanceBefore =
+        money(
+          data.walletBalance || 0
         );
 
-      const purchaseAmount =
-        toMoney(amount);
-
-      if (
-        purchaseAmount <= 0
-      ) {
-        throw new Error(
-          "Invalid purchase amount"
-        );
-      }
-
-      if (
-        balance < purchaseAmount
-      ) {
-        throw new Error(
-          "Insufficient wallet balance"
-        );
-      }
-
-      const newBalance =
-        toMoney(
-          balance -
-            purchaseAmount
+      const balanceAfter =
+        money(
+          balanceBefore +
+          creditAmount
         );
 
-      transaction.update(
+      // ------------------------------------------------------
+      // UPDATE WALLET
+      // ------------------------------------------------------
+
+      transaction.set(
         userRef,
         {
           walletBalance:
-            newBalance,
+            balanceAfter,
 
           updatedAt:
             admin.firestore
               .FieldValue
               .serverTimestamp(),
+        },
+        {
+          merge: true,
         }
       );
 
+      // ------------------------------------------------------
+      // SAVE WALLET TRANSACTION
+      // ------------------------------------------------------
+
       transaction.set(
-        serviceRef,
+        transactionRef,
         {
           uid,
 
-          requestId,
-
-          amount:
-            purchaseAmount,
-
-          type,
-
-          provider:
-            provider || null,
+          type:
+            "wallet_funding",
 
           status:
-            "provider_pending",
+            "completed",
 
-          previousBalance:
-            balance,
+          fundingMethod:
+            "dedicated_virtual_account",
 
-          balanceAfterDebit:
-            newBalance,
+          reference,
 
-          metadata:
-            metadata || {},
+          paystackTransactionId:
+            payment?.id ||
+            null,
+
+          grossAmount,
+
+          fee,
+
+          creditedAmount:
+            creditAmount,
+
+          currency:
+            payment?.currency ||
+            "NGN",
+
+          channel:
+            payment
+              ?.authorization
+              ?.channel ||
+            payment?.channel ||
+            "dedicated_nuban",
+
+          receiverAccount,
+
+          receiverBank:
+            payment
+              ?.authorization
+              ?.receiver_bank ||
+            null,
+
+          senderName:
+            payment
+              ?.authorization
+              ?.sender_name ||
+            null,
+
+          senderBank:
+            payment
+              ?.authorization
+              ?.sender_bank ||
+            null,
+
+          senderAccount:
+            payment
+              ?.authorization
+              ?.sender_account_number ||
+            null,
+
+          balanceBefore,
+
+          balanceAfter,
 
           createdAt:
             admin.firestore
               .FieldValue
               .serverTimestamp(),
 
-          updatedAt:
+          completedAt:
             admin.firestore
               .FieldValue
               .serverTimestamp(),
-        }
-      );
-
-      return {
-        alreadyExists:
-          false,
-
-        data: {
-          uid,
-
-          requestId,
-
-          amount:
-            purchaseAmount,
-
-          type,
-
-          provider:
-            provider || null,
-
-          status:
-            "provider_pending",
-
-          previousBalance:
-            balance,
-
-          balanceAfterDebit:
-            newBalance,
-
-          metadata:
-            metadata || {},
         },
-      };
-    }
-  );
-}
-
-// ============================================================
-// MARK PROCESSING
-// ============================================================
-
-async function markProviderProcessing(
-  requestId,
-  providerResponse
-) {
-  const ref =
-    db.collection(
-      "serviceTransactions"
-    ).doc(requestId);
-
-  await ref.update({
-    status:
-      "processing",
-
-    providerResponse:
-      providerResponse || null,
-
-    updatedAt:
-      admin.firestore
-        .FieldValue
-        .serverTimestamp(),
-  });
-}
-
-// ============================================================
-// COMPLETE PURCHASE
-// ============================================================
-
-async function markPurchaseCompleted(
-  requestId,
-  providerResponse
-) {
-  const ref =
-    db.collection(
-      "serviceTransactions"
-    ).doc(requestId);
-
-  const snapshot =
-    await ref.get();
-
-  if (!snapshot.exists) {
-    throw new Error(
-      "Service transaction not found"
-    );
-  }
-
-  const data =
-    snapshot.data();
-
-  if (
-    data.status ===
-    "completed"
-  ) {
-    return data;
-  }
-
-  if (
-    data.status ===
-    "refunded"
-  ) {
-    return data;
-  }
-
-  await ref.update({
-    status:
-      "completed",
-
-    providerResponse:
-      providerResponse || null,
-
-    completedAt:
-      admin.firestore
-        .FieldValue
-        .serverTimestamp(),
-
-    updatedAt:
-      admin.firestore
-        .FieldValue
-        .serverTimestamp(),
-  });
-
-  const updated =
-    await ref.get();
-
-  return updated.data();
-}
-
-// ============================================================
-// REFUND FAILED PURCHASE
-// ============================================================
-
-async function refundFailedPurchase(
-  requestId,
-  reason,
-  providerResponse
-) {
-  const ref =
-    db.collection(
-      "serviceTransactions"
-    ).doc(requestId);
-
-  return db.runTransaction(
-    async (transaction) => {
-      const serviceSnapshot =
-        await transaction.get(ref);
-
-      if (!serviceSnapshot.exists) {
-        throw new Error(
-          "Service transaction not found"
-        );
-      }
-
-      const service =
-        serviceSnapshot.data();
-
-      if (
-        service.status ===
-          "refunded" ||
-        service.status ===
-          "completed"
-      ) {
-        return service;
-      }
-
-      const uid =
-        service.uid;
-
-      const amount =
-        toMoney(
-          service.amount
-        );
-
-      const userRef =
-        db.collection(
-          "users"
-        ).doc(uid);
-
-      const userSnapshot =
-        await transaction.get(
-          userRef
-        );
-
-      if (!userSnapshot.exists) {
-        throw new Error(
-          "User not found"
-        );
-      }
-
-      const user =
-        userSnapshot.data() || {};
-
-      const currentBalance =
-        Number(
-          user.walletBalance || 0
-        );
-
-      const newBalance =
-        toMoney(
-          currentBalance +
-            amount
-        );
-
-      transaction.update(
-        userRef,
         {
-          walletBalance:
-            newBalance,
-
-          updatedAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
+          merge: true,
         }
       );
 
-      transaction.update(
-        ref,
-        {
-          status:
-            "refunded",
-
-          refundReason:
-            reason || null,
-
-          providerResponse:
-            providerResponse || null,
-
-          refundedAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-
-          updatedAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-
-          balanceAfterRefund:
-            newBalance,
-        }
-      );
-
-      const historyRef =
-        db.collection(
-          "walletHistory"
-        ).doc(
-          `refund-${requestId}`
-        );
+      // ------------------------------------------------------
+      // WALLET HISTORY
+      // ------------------------------------------------------
 
       transaction.set(
         historyRef,
         {
           uid,
 
-          transactionId:
-            requestId,
-
-          reference:
-            requestId,
-
           type:
-            "refund",
+            "credit",
 
-          amount,
+          amount:
+            creditAmount,
 
-          balanceAfter:
-            newBalance,
+          grossAmount,
 
-          reason:
-            reason || null,
+          fee,
+
+          balanceBefore,
+
+          balanceAfter,
+
+          method:
+            "dedicated_virtual_account",
+
+          reference,
+
+          description:
+            `Wallet funding ₦${grossAmount.toFixed(
+              2
+            )} - ₦${fee.toFixed(
+              2
+            )} charge`,
 
           createdAt:
             admin.firestore
@@ -1061,1420 +1144,171 @@ async function refundFailedPurchase(
         }
       );
 
-      return {
-        ...service,
-
-        status:
-          "refunded",
-
-        balanceAfterRefund:
-          newBalance,
+      result = {
+        credited: true,
+        duplicate: false,
+        uid,
+        grossAmount,
+        fee,
+        creditedAmount:
+          creditAmount,
+        balanceBefore,
+        balanceAfter,
+        reference,
       };
     }
   );
+
+  return result;
 }
 
 // ============================================================
-// DATA PURCHASE
+// PAYSTACK WEBHOOK
+//
+// IMPORTANT:
+// express.raw MUST COME BEFORE express.json()
 // ============================================================
+
+app.use(
+  "/api/payment/webhook",
+  express.raw({
+    type:
+      "application/json",
+  })
+);
 
 app.post(
-  "/api/cheapdatahub/buy-data",
-  requireFirebaseAuth,
-  requireOwnUid,
-  checkCheapDataHub,
+  "/api/payment/webhook",
   async (req, res) => {
     try {
-      const {
-        uid,
-        phone,
-        bundle_id,
-        amount,
-        request_id,
-      } = req.body;
+      const rawBody =
+        req.body;
 
-      const phoneNumber =
-        cleanPhone(phone);
-
-      if (
-        !isValidPhone(
-          phoneNumber
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Invalid phone number",
-        });
-      }
-
-      const bundleId =
-        Number(bundle_id);
-
-      if (
-        !Number.isInteger(
-          bundleId
-        ) ||
-        bundleId <= 0
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Valid bundle_id is required",
-        });
-      }
-
-      const purchaseAmount =
-        toMoney(amount);
-
-      if (
-        purchaseAmount <= 0
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Valid amount is required",
-        });
-      }
-
-      const requestIdValue =
-        cleanString(
-          request_id
-        ) ||
-        generateRequestId(
-          "DATA"
-        );
-
-      const reserved =
-        await reserveWalletPurchase({
-          uid,
-
-          requestId:
-            requestIdValue,
-
-          amount:
-            purchaseAmount,
-
-          type:
-            "data",
-
-          provider:
-            "cheapdatahub",
-
-          metadata: {
-            bundle_id:
-              bundleId,
-
-            phone:
-              phoneNumber,
-          },
-        });
-
-      if (
-        reserved.alreadyExists
-      ) {
-        const status =
-          normalizeStatus(
-            reserved.data.status
-          );
-
-        return res.json({
-          success:
-            status ===
-            "completed",
-
-          message:
-            "This request already exists",
-
-          requestId:
-            requestIdValue,
-
-          status,
-
-          transaction:
-            formatFirestoreData(
-              reserved.data
-            ),
-        });
-      }
-
-      const payload = {
-        bundle_id:
-          bundleId,
-
-        phone_number:
-          phoneNumber,
-      };
-
-      let providerResponse;
-
-      try {
-        providerResponse =
-          await cheapDataHubPost(
-            CDH.data,
-            payload
-          );
-      } catch (providerError) {
-        providerResponse =
-          providerError?.response
-            ?.data || {
-            status:
-              "failed",
-
-            message:
-              getErrorMessage(
-                providerError
-              ),
-          };
-      }
-
-      if (
-        isProviderSuccess(
-          providerResponse
-        )
-      ) {
-        await markProviderProcessing(
-          requestIdValue,
-          providerResponse
-        );
-
-        return res.json({
-          success: true,
-
-          message:
-            providerResponse.message ||
-            "Data purchase accepted",
-
-          requestId:
-            requestIdValue,
-
-          status:
-            "processing",
-
-          transaction:
-            providerResponse,
-        });
-      }
-
-      if (
-        isProviderFailed(
-          providerResponse
-        )
-      ) {
-        await refundFailedPurchase(
-          requestIdValue,
-
-          "CheapDataHub rejected the data transaction",
-
-          providerResponse
-        );
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            providerResponse.message ||
-            "Data purchase failed. Wallet refunded.",
-
-          requestId:
-            requestIdValue,
-
-          provider:
-            providerResponse,
-        });
-      }
-
-      await markProviderProcessing(
-        requestIdValue,
-        providerResponse
-      );
-
-      return res.json({
-        success: true,
-
-        message:
-          "Data transaction is being processed",
-
-        requestId:
-          requestIdValue,
-
-        status:
-          "processing",
-
-        provider:
-          providerResponse,
-      });
-    } catch (error) {
-      console.error(
-        "DATA ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// AIRTIME PURCHASE
-// ============================================================
-
-app.post(
-  "/api/cheapdatahub/buy-airtime",
-  requireFirebaseAuth,
-  requireOwnUid,
-  checkCheapDataHub,
-  async (req, res) => {
-    try {
-      const {
-        uid,
-        network,
-        phone,
-        amount,
-        request_id,
-      } = req.body;
-
-      const cleanNetwork =
-        cleanString(
-          network
-        ).toLowerCase();
-
-      const phoneNumber =
-        cleanPhone(phone);
-
-      const providerId =
-        AIRTIME_PROVIDER_IDS[
-          cleanNetwork
-        ];
-
-      if (!providerId) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "CheapDataHub provider ID for this network is not configured",
-        });
-      }
-
-      if (
-        !isValidPhone(
-          phoneNumber
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Invalid phone number",
-        });
-      }
-
-      const purchaseAmount =
-        toMoney(amount);
-
-      if (
-        purchaseAmount <= 0
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Invalid airtime amount",
-        });
-      }
-
-      const requestIdValue =
-        cleanString(
-          request_id
-        ) ||
-        generateRequestId(
-          "AIRTIME"
-        );
-
-      const reserved =
-        await reserveWalletPurchase({
-          uid,
-
-          requestId:
-            requestIdValue,
-
-          amount:
-            purchaseAmount,
-
-          type:
-            "airtime",
-
-          provider:
-            "cheapdatahub",
-
-          metadata: {
-            network:
-              cleanNetwork,
-
-            provider_id:
-              providerId,
-
-            phone:
-              phoneNumber,
-          },
-        });
-
-      if (
-        reserved.alreadyExists
-      ) {
-        const status =
-          normalizeStatus(
-            reserved.data.status
-          );
-
-        return res.json({
-          success:
-            status ===
-            "completed",
-
-          message:
-            "This request already exists",
-
-          requestId:
-            requestIdValue,
-
-          status,
-
-          transaction:
-            formatFirestoreData(
-              reserved.data
-            ),
-        });
-      }
-
-      const payload = {
-        provider_id:
-          Number(providerId),
-
-        phone_number:
-          phoneNumber,
-
-        amount:
-          purchaseAmount,
-      };
-
-      let providerResponse;
-
-      try {
-        providerResponse =
-          await cheapDataHubPost(
-            CDH.airtime,
-            payload
-          );
-      } catch (providerError) {
-        providerResponse =
-          providerError?.response
-            ?.data || {
-            status:
-              "failed",
-
-            message:
-              getErrorMessage(
-                providerError
-              ),
-          };
-      }
-
-      if (
-        isProviderSuccess(
-          providerResponse
-        )
-      ) {
-        await markProviderProcessing(
-          requestIdValue,
-          providerResponse
-        );
-
-        return res.json({
-          success: true,
-
-          message:
-            providerResponse.message ||
-            "Airtime purchase accepted",
-
-          requestId:
-            requestIdValue,
-
-          status:
-            "processing",
-
-          provider:
-            providerResponse,
-        });
-      }
-
-      if (
-        isProviderFailed(
-          providerResponse
-        )
-      ) {
-        await refundFailedPurchase(
-          requestIdValue,
-
-          "CheapDataHub rejected the airtime transaction",
-
-          providerResponse
-        );
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            providerResponse.message ||
-            "Airtime purchase failed. Wallet refunded.",
-
-          requestId:
-            requestIdValue,
-
-          provider:
-            providerResponse,
-        });
-      }
-
-      await markProviderProcessing(
-        requestIdValue,
-        providerResponse
-      );
-
-      return res.json({
-        success: true,
-
-        message:
-          "Airtime transaction is being processed",
-
-        requestId:
-          requestIdValue,
-
-        status:
-          "processing",
-
-        provider:
-          providerResponse,
-      });
-    } catch (error) {
-      console.error(
-        "AIRTIME ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// ELECTRICITY PURCHASE
-// ============================================================
-
-app.post(
-  "/api/cheapdatahub/buy-electricity",
-  requireFirebaseAuth,
-  requireOwnUid,
-  checkCheapDataHub,
-  async (req, res) => {
-    try {
-      const {
-        uid,
-        disco,
-        meter_number,
-        meter_type,
-        amount,
-        phone,
-        request_id,
-      } = req.body;
-
-      const cleanDisco =
-        cleanString(
-          disco
-        ).toLowerCase();
-
-      const discoId =
-        ELECTRICITY_DISCO_IDS[
-          cleanDisco
-        ];
-
-      if (!discoId) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "CheapDataHub electricity provider ID is not configured",
-        });
-      }
-
-      const meter =
-        cleanString(
-          meter_number
-        );
-
-      if (!meter) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Meter number is required",
-        });
-      }
-
-      const cleanMeterType =
-        cleanString(
-          meter_type
-        ).toLowerCase() ||
-        "prepaid";
-
-      if (
-        ![
-          "prepaid",
-          "postpaid",
-        ].includes(
-          cleanMeterType
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Meter type must be prepaid or postpaid",
-        });
-      }
-
-      const purchaseAmount =
-        toMoney(amount);
-
-      if (
-        purchaseAmount <= 0
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Invalid electricity amount",
-        });
-      }
-
-      const phoneNumber =
-        cleanPhone(phone);
-
-      if (
-        phoneNumber &&
-        !isValidPhone(
-          phoneNumber
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Invalid phone number",
-        });
-      }
-
-      const requestIdValue =
-        cleanString(
-          request_id
-        ) ||
-        generateRequestId(
-          "ELECTRIC"
-        );
-
-      const reserved =
-        await reserveWalletPurchase({
-          uid,
-
-          requestId:
-            requestIdValue,
-
-          amount:
-            purchaseAmount,
-
-          type:
-            "electricity",
-
-          provider:
-            "cheapdatahub",
-
-          metadata: {
-            disco:
-              cleanDisco,
-
-            disco_id:
-              discoId,
-
-            meter_number:
-              meter,
-
-            meter_type:
-              cleanMeterType,
-
-            phone:
-              phoneNumber,
-          },
-        });
-
-      if (
-        reserved.alreadyExists
-      ) {
-        const status =
-          normalizeStatus(
-            reserved.data.status
-          );
-
-        return res.json({
-          success:
-            status ===
-            "completed",
-
-          message:
-            "This request already exists",
-
-          requestId:
-            requestIdValue,
-
-          status,
-
-          transaction:
-            formatFirestoreData(
-              reserved.data
-            ),
-        });
-      }
-
-      const payload = {
-        disco_id:
-          Number(discoId),
-
-        meter_number:
-          meter,
-
-        amount:
-          purchaseAmount,
-
-        meter_type:
-          cleanMeterType,
-
-        phone:
-          phoneNumber ||
-          "08000000000",
-      };
-
-      let providerResponse;
-
-      try {
-        providerResponse =
-          await cheapDataHubPost(
-            CDH.electricity,
-            payload
-          );
-      } catch (providerError) {
-        providerResponse =
-          providerError?.response
-            ?.data || {
-            status:
-              "failed",
-
-            message:
-              getErrorMessage(
-                providerError
-              ),
-          };
-      }
-
-      if (
-        isProviderSuccess(
-          providerResponse
-        )
-      ) {
-        await markProviderProcessing(
-          requestIdValue,
-          providerResponse
-        );
-
-        return res.json({
-          success: true,
-
-          message:
-            providerResponse.message ||
-            "Electricity transaction accepted",
-
-          requestId:
-            requestIdValue,
-
-          status:
-            "processing",
-
-          provider:
-            providerResponse,
-        });
-      }
-
-      if (
-        isProviderFailed(
-          providerResponse
-        )
-      ) {
-        await refundFailedPurchase(
-          requestIdValue,
-
-          "CheapDataHub rejected the electricity transaction",
-
-          providerResponse
-        );
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            providerResponse.message ||
-            "Electricity purchase failed. Wallet refunded.",
-
-          requestId:
-            requestIdValue,
-
-          provider:
-            providerResponse,
-        });
-      }
-
-      await markProviderProcessing(
-        requestIdValue,
-        providerResponse
-      );
-
-      return res.json({
-        success: true,
-
-        message:
-          "Electricity transaction is being processed",
-
-        requestId:
-          requestIdValue,
-
-        status:
-          "processing",
-
-        provider:
-          providerResponse,
-      });
-    } catch (error) {
-      console.error(
-        "ELECTRICITY ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// CABLE PURCHASE
-// ============================================================
-
-app.post(
-  "/api/cheapdatahub/buy-cable",
-  requireFirebaseAuth,
-  requireOwnUid,
-  checkCheapDataHub,
-  async (req, res) => {
-    try {
-      const {
-        uid,
-        plan_id,
-        cardnumber,
-        phone,
-        amount,
-        request_id,
-      } = req.body;
-
-      const planId =
-        Number(plan_id);
-
-      if (
-        !Number.isInteger(
-          planId
-        ) ||
-        planId <= 0
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Valid plan_id is required",
-        });
-      }
-
-      const card =
-        cleanString(
-          cardnumber
-        );
-
-      if (!card) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Smartcard number is required",
-        });
-      }
-
-      const purchaseAmount =
-        toMoney(amount);
-
-      if (
-        purchaseAmount <= 0
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Valid cable amount is required",
-        });
-      }
-
-      const phoneNumber =
-        cleanPhone(phone);
-
-      if (
-        phoneNumber &&
-        !isValidPhone(
-          phoneNumber
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Invalid phone number",
-        });
-      }
-
-      const requestIdValue =
-        cleanString(
-          request_id
-        ) ||
-        generateRequestId(
-          "CABLE"
-        );
-
-      const reserved =
-        await reserveWalletPurchase({
-          uid,
-
-          requestId:
-            requestIdValue,
-
-          amount:
-            purchaseAmount,
-
-          type:
-            "cable",
-
-          provider:
-            "cheapdatahub",
-
-          metadata: {
-            plan_id:
-              planId,
-
-            cardnumber:
-              card,
-
-            phone:
-              phoneNumber,
-          },
-        });
-
-      if (
-        reserved.alreadyExists
-      ) {
-        const status =
-          normalizeStatus(
-            reserved.data.status
-          );
-
-        return res.json({
-          success:
-            status ===
-            "completed",
-
-          message:
-            "This request already exists",
-
-          requestId:
-            requestIdValue,
-
-          status,
-
-          transaction:
-            formatFirestoreData(
-              reserved.data
-            ),
-        });
-      }
-
-      const payload = {
-        plan_id:
-          planId,
-
-        cardnumber:
-          card,
-
-        phone:
-          phoneNumber ||
-          "08000000000",
-      };
-
-      let providerResponse;
-
-      try {
-        providerResponse =
-          await cheapDataHubPost(
-            CDH.cable,
-            payload
-          );
-      } catch (providerError) {
-        providerResponse =
-          providerError?.response
-            ?.data || {
-            status:
-              "failed",
-
-            message:
-              getErrorMessage(
-                providerError
-              ),
-          };
-      }
-
-      if (
-        isProviderSuccess(
-          providerResponse
-        )
-      ) {
-        await markProviderProcessing(
-          requestIdValue,
-          providerResponse
-        );
-
-        return res.json({
-          success: true,
-
-          message:
-            providerResponse.message ||
-            "Cable transaction accepted",
-
-          requestId:
-            requestIdValue,
-
-          status:
-            "processing",
-
-          provider:
-            providerResponse,
-        });
-      }
-
-      if (
-        isProviderFailed(
-          providerResponse
-        )
-      ) {
-        await refundFailedPurchase(
-          requestIdValue,
-
-          "CheapDataHub rejected the cable transaction",
-
-          providerResponse
-        );
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            providerResponse.message ||
-            "Cable purchase failed. Wallet refunded.",
-
-          requestId:
-            requestIdValue,
-
-          provider:
-            providerResponse,
-        });
-      }
-
-      await markProviderProcessing(
-        requestIdValue,
-        providerResponse
-      );
-
-      return res.json({
-        success: true,
-
-        message:
-          "Cable transaction is being processed",
-
-        requestId:
-          requestIdValue,
-
-        status:
-          "processing",
-
-        provider:
-          providerResponse,
-      });
-    } catch (error) {
-      console.error(
-        "CABLE ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// CHEAPDATAHUB WALLET BALANCE
-// ============================================================
-
-app.get(
-  "/api/cheapdatahub/balance",
-  requireFirebaseAuth,
-  checkCheapDataHub,
-  async (req, res) => {
-    try {
-      const data =
-        await cheapDataHubGet(
-          CDH.balance
-        );
-
-      return res.json({
-        success: true,
-
-        provider:
-          data,
-      });
-    } catch (error) {
-      console.error(
-        "CDH BALANCE ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// CHEAPDATAHUB TRANSACTIONS
-// ============================================================
-
-app.get(
-  "/api/cheapdatahub/transactions",
-  requireFirebaseAuth,
-  checkCheapDataHub,
-  async (req, res) => {
-    try {
-      const data =
-        await cheapDataHubGet(
-          CDH.transactions
-        );
-
-      return res.json({
-        success: true,
-
-        provider:
-          data,
-      });
-    } catch (error) {
-      console.error(
-        "CDH TRANSACTIONS ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// CHEAPDATAHUB WEBHOOK
-// ============================================================
-
-app.post(
-  "/api/cheapdatahub/webhook",
-  async (req, res) => {
-    try {
-      const secret =
-        process.env
-          .CHEAPDATAHUB_WEBHOOK_SECRET;
-
-      if (!secret) {
-        console.error(
-          "CheapDataHub webhook secret is missing"
-        );
-
-        return res
-          .status(503)
-          .send(
-            "Webhook secret not configured"
-          );
-      }
-
-      const signatureHeader =
-        process.env
-          .CHEAPDATAHUB_WEBHOOK_SIGNATURE_HEADER ||
-        "x-cheapdatahub-signature";
-
-      const received =
+      const signature =
         req.headers[
-          signatureHeader.toLowerCase()
+          "x-paystack-signature"
         ];
 
-      if (!received) {
-        return res
-          .status(401)
-          .send(
-            "Missing webhook signature"
-          );
-      }
-
-      const algorithm =
-        process.env
-          .CHEAPDATAHUB_WEBHOOK_ALGORITHM ||
-        "sha256";
-
-      const expected =
-        crypto
-          .createHmac(
-            algorithm,
-            secret
-          )
-          .update(req.body)
-          .digest("hex");
-
-      const receivedBuffer =
-        Buffer.from(
-          String(received),
-          "utf8"
-        );
-
-      const expectedBuffer =
-        Buffer.from(
-          expected,
-          "utf8"
-        );
-
       if (
-        receivedBuffer.length !==
-        expectedBuffer.length ||
-        !crypto.timingSafeEqual(
-          receivedBuffer,
-          expectedBuffer
+        !Buffer.isBuffer(
+          rawBody
         )
       ) {
-        return res
-          .status(401)
-          .send(
-            "Invalid webhook signature"
-          );
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid webhook body",
+        });
+      }
+
+      // ------------------------------------------------------
+      // VERIFY PAYSTACK
+      // ------------------------------------------------------
+
+      const valid =
+        verifyPaystackSignature(
+          rawBody,
+          signature
+        );
+
+      if (!valid) {
+        return res.status(401).json({
+          success: false,
+          message:
+            "Invalid Paystack signature",
+        });
       }
 
       const event =
         JSON.parse(
-          req.body.toString(
+          rawBody.toString(
             "utf8"
           )
         );
 
-      const reference =
-        event?.reference ||
-        event?.data?.reference ||
-        event?.transaction_id ||
-        event?.data?.transaction_id;
+      console.log(
+        "PAYSTACK EVENT:",
+        event?.event
+      );
 
-      const status =
-        event?.status ||
-        event?.data?.status;
-
-      if (!reference) {
-        return res.json({
-          success: true,
-
-          ignored: true,
-        });
-      }
-
-      const query =
-        await db
-          .collection(
-            "serviceTransactions"
-          )
-          .where(
-            "requestId",
-            "==",
-            reference
-          )
-          .limit(1)
-          .get();
-
-      let transactionDoc =
-        null;
-
-      if (!query.empty) {
-        transactionDoc =
-          query.docs[0];
-      } else {
-        const byId =
-          await db
-            .collection(
-              "serviceTransactions"
-            )
-            .doc(reference)
-            .get();
-
-        if (byId.exists) {
-          transactionDoc =
-            byId;
-        }
-      }
-
-      if (!transactionDoc) {
-        console.log(
-          "Webhook transaction not found:",
-          reference
-        );
-
-        return res.json({
-          success: true,
-
-          ignored: true,
-        });
-      }
-
-      const transaction =
-        transactionDoc.data();
-
-      const normalized =
-        normalizeStatus(
-          status
-        );
+      // ------------------------------------------------------
+      // SUCCESS PAYMENT
+      // ------------------------------------------------------
 
       if (
-        normalized ===
-        "completed"
+        event?.event ===
+        "charge.success"
       ) {
-        await markPurchaseCompleted(
-          transactionDoc.id,
-          event
-        );
-      } else if (
-        normalized ===
-        "failed"
-      ) {
-        await refundFailedPurchase(
-          transactionDoc.id,
+        const payment =
+          event.data || {};
 
-          "CheapDataHub webhook reported failed transaction",
+        const channel =
+          payment
+            ?.authorization
+            ?.channel ||
+          payment?.channel ||
+          "";
 
-          event
-        );
-      } else if (
-        normalized ===
-        "refunded"
-      ) {
-        if (
-          transaction.status !==
-          "refunded"
-        ) {
-          await refundFailedPurchase(
-            transactionDoc.id,
+        const isDVA =
+          channel ===
+            "dedicated_nuban" ||
+          !!payment
+            ?.authorization
+            ?.receiver_bank_account_number;
 
-            "CheapDataHub webhook reported refunded transaction",
+        if (isDVA) {
+          const result =
+            await processVirtualAccountPayment(
+              payment
+            );
 
-            event
+          console.log(
+            "DVA RESULT:",
+            result
           );
+
+          return res.json({
+            success: true,
+            processed: true,
+            result,
+          });
         }
-      } else {
-        await markProviderProcessing(
-          transactionDoc.id,
-          event
-        );
       }
 
       return res.json({
         success: true,
+        processed: false,
+        message:
+          "Webhook received",
       });
-    } catch (error) {
+    }
+
+    catch (error) {
       console.error(
-        "CDH WEBHOOK ERROR:",
-        error
+        "WEBHOOK ERROR:",
+        error?.response?.data ||
+        error.message
       );
 
+      // 500 tells Paystack processing failed
+      // and it can retry the webhook.
       return res.status(500).json({
         success: false,
-
         message:
           "Webhook processing failed",
       });
     }
   }
+);
+
+// ============================================================
+// JSON BODY
+// ============================================================
+
+app.use(
+  express.json({
+    limit: "1mb",
+  })
 );
 
 // ============================================================
@@ -2487,20 +1321,14 @@ app.get(
   requireOwnUid,
   async (req, res) => {
     try {
-      if (!checkFirebase(res)) {
-        return;
-      }
+      const user =
+        await getUser(
+          req.params.uid
+        );
 
-      const {
-        userData,
-      } = await getUser(
-        req.params.uid
-      );
-
-      if (!userData) {
+      if (!user) {
         return res.status(404).json({
           success: false,
-
           message:
             "User not found",
         });
@@ -2510,19 +1338,21 @@ app.get(
         success: true,
 
         balance:
-          toMoney(
-            userData.walletBalance ||
-              0
+          money(
+            user.walletBalance ||
+            0
           ),
+
+        currency:
+          "NGN",
       });
-    } catch (error) {
+    }
+
+    catch (error) {
       return res.status(500).json({
         success: false,
-
         message:
-          getErrorMessage(
-            error
-          ),
+          errorMessage(error),
       });
     }
   }
@@ -2533,21 +1363,848 @@ app.get(
 // ============================================================
 
 app.get(
-  "/api/wallet/:uid",
+  "/api/wallet/details/:uid",
   requireFirebaseAuth,
   requireOwnUid,
   async (req, res) => {
     try {
-      const {
-        userData,
-      } = await getUser(
-        req.params.uid
-      );
+      const user =
+        await getUser(
+          req.params.uid
+        );
 
-      if (!userData) {
+      if (!user) {
         return res.status(404).json({
           success: false,
+          message:
+            "User not found",
+        });
+      }
 
+      return res.json({
+        success: true,
+
+        walletBalance:
+          money(
+            user.walletBalance ||
+            0
+          ),
+
+        virtualAccount:
+          user.virtualAccount ||
+          null,
+      });
+    }
+
+    catch (error) {
+      return res.status(500).json({
+        success: false,
+        message:
+          errorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// WALLET HISTORY
+// ============================================================
+
+app.get(
+  "/api/wallet/history/:uid",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+      let limit =
+        Number(
+          req.query.limit || 50
+        );
+
+      limit =
+        Math.min(
+          Math.max(
+            limit,
+            1
+          ),
+          100
+        );
+
+      const snapshot =
+        await db()
+          .collection(
+            "walletHistory"
+          )
+          .where(
+            "uid",
+            "==",
+            req.params.uid
+          )
+          .orderBy(
+            "createdAt",
+            "desc"
+          )
+          .limit(limit)
+          .get();
+
+      const history =
+        snapshot.docs.map(
+          (doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          })
+        );
+
+      return res.json({
+        success: true,
+        history,
+      });
+    }
+
+    catch (error) {
+      console.error(
+        "Wallet history error:",
+        error.message
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          errorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// CHEAPDATAHUB WALLET BALANCE
+// ============================================================
+
+app.get(
+  "/api/cheapdatahub/wallet-balance",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+      const response =
+        await axios.get(
+          `${CHEAPDATAHUB_BASE_URL}/resellers/wallet/balance/`,
+          {
+            headers:
+              cheapDataHubHeaders(),
+
+            timeout:
+              30000,
+          }
+        );
+
+      return res.json(
+        response.data
+      );
+    }
+
+    catch (error) {
+      console.error(
+        "CheapDataHub wallet error:",
+        error?.response?.data ||
+        error.message
+      );
+
+      return res.status(
+        error?.response?.status ||
+        500
+      ).json({
+        success: false,
+        message:
+          errorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// REFUND WALLET
+// ============================================================
+
+async function refundWallet(
+  uid,
+  amount,
+  reference,
+  reason
+) {
+  const userRef =
+    db()
+      .collection("users")
+      .doc(uid);
+
+  const refundRef =
+    db()
+      .collection("walletHistory")
+      .doc(
+        `refund-${reference}`
+      );
+
+  await db().runTransaction(
+    async (transaction) => {
+
+      const existing =
+        await transaction.get(
+          refundRef
+        );
+
+      if (
+        existing.exists
+      ) {
+        return;
+      }
+
+      const userSnap =
+        await transaction.get(
+          userRef
+        );
+
+      if (
+        !userSnap.exists
+      ) {
+        throw new Error(
+          "User not found during refund"
+        );
+      }
+
+      const data =
+        userSnap.data() || {};
+
+      const before =
+        money(
+          data.walletBalance ||
+          0
+        );
+
+      const after =
+        money(
+          before + amount
+        );
+
+      transaction.update(
+        userRef,
+        {
+          walletBalance:
+            after,
+
+          updatedAt:
+            admin.firestore
+              .FieldValue
+              .serverTimestamp(),
+        }
+      );
+
+      transaction.set(
+        refundRef,
+        {
+          uid,
+
+          type:
+            "credit",
+
+          amount,
+
+          grossAmount:
+            amount,
+
+          fee: 0,
+
+          balanceBefore:
+            before,
+
+          balanceAfter:
+            after,
+
+          method:
+            "refund",
+
+          reference,
+
+          description:
+            `Refund: ${reason}`,
+
+          createdAt:
+            admin.firestore
+              .FieldValue
+              .serverTimestamp(),
+        }
+      );
+    }
+  );
+}
+
+// ============================================================
+// CHEAPDATAHUB BUY DATA
+// ============================================================
+
+app.post(
+  "/api/cheapdatahub/buy-data",
+  requireFirebaseAuth,
+  async (req, res) => {
+
+    const uid =
+      req.user.uid;
+
+    try {
+
+      const bundleId =
+        Number(
+          req.body?.bundle_id
+        );
+
+      const phoneNumber =
+        cleanPhone(
+          req.body?.phone_number
+        );
+
+      const amount =
+        money(
+          req.body?.amount
+        );
+
+      const network =
+        cleanString(
+          req.body?.network
+        ).toLowerCase();
+
+      // ------------------------------------------------------
+      // VALIDATION
+      // ------------------------------------------------------
+
+      if (
+        !Number.isInteger(
+          bundleId
+        ) ||
+        bundleId <= 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid bundle_id",
+        });
+      }
+
+      if (
+        !isValidPhone(
+          phoneNumber
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid Nigerian phone number",
+        });
+      }
+
+      if (
+        amount <= 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid amount",
+        });
+      }
+
+      const id =
+        requestId("DATA");
+
+      const userRef =
+        db()
+          .collection("users")
+          .doc(uid);
+
+      const transactionRef =
+        db()
+          .collection("transactions")
+          .doc(id);
+
+      // ------------------------------------------------------
+      // REMOVE MONEY FROM WALLET
+      // ------------------------------------------------------
+
+      await db().runTransaction(
+        async (transaction) => {
+
+          const userSnap =
+            await transaction.get(
+              userRef
+            );
+
+          if (
+            !userSnap.exists
+          ) {
+            throw new Error(
+              "USER_NOT_FOUND"
+            );
+          }
+
+          const userData =
+            userSnap.data() ||
+            {};
+
+          const balance =
+            money(
+              userData.walletBalance ||
+              0
+            );
+
+          if (
+            balance < amount
+          ) {
+            throw new Error(
+              "INSUFFICIENT_WALLET"
+            );
+          }
+
+          transaction.update(
+            userRef,
+            {
+              walletBalance:
+                money(
+                  balance -
+                  amount
+                ),
+
+              updatedAt:
+                admin.firestore
+                  .FieldValue
+                  .serverTimestamp(),
+            }
+          );
+
+          transaction.set(
+            transactionRef,
+            {
+              uid,
+
+              requestId:
+                id,
+
+              type:
+                "data",
+
+              provider:
+                "cheapdatahub",
+
+              network,
+
+              bundleId,
+
+              phoneNumber,
+
+              amount,
+
+              status:
+                "processing",
+
+              createdAt:
+                admin.firestore
+                  .FieldValue
+                  .serverTimestamp(),
+            }
+          );
+        }
+      );
+
+      // ------------------------------------------------------
+      // SEND TO CHEAPDATAHUB
+      // ------------------------------------------------------
+
+      let providerResponse;
+
+      try {
+
+        providerResponse =
+          await axios.post(
+            `${CHEAPDATAHUB_BASE_URL}/resellers/data/purchase/`,
+            {
+              bundle_id:
+                bundleId,
+
+              phone_number:
+                phoneNumber,
+            },
+            {
+              headers:
+                cheapDataHubHeaders(),
+
+              timeout:
+                45000,
+
+              validateStatus:
+                () => true,
+            }
+          );
+
+      }
+
+      catch (error) {
+
+        await transactionRef.set(
+          {
+            status:
+              "processing",
+
+            providerMessage:
+              error.message,
+
+            updatedAt:
+              admin.firestore
+                .FieldValue
+                .serverTimestamp(),
+          },
+          {
+            merge: true,
+          }
+        );
+
+        return res.status(202).json({
+          success: false,
+
+          processing: true,
+
+          requestId: id,
+
+          message:
+            "Purchase is being processed. Check transaction status.",
+        });
+      }
+
+      const providerData =
+        providerResponse.data;
+
+      const providerStatus =
+        String(
+          providerData?.status ??
+          ""
+        ).toLowerCase();
+
+      const successful =
+        providerStatus === "true" ||
+        providerStatus === "success" ||
+        providerStatus === "successful" ||
+        providerData?.success === true;
+
+      // ------------------------------------------------------
+      // SUCCESS
+      // ------------------------------------------------------
+
+      if (successful) {
+
+        await transactionRef.set(
+          {
+            status:
+              "completed",
+
+            providerResponse:
+              providerData,
+
+            providerReference:
+              providerData?.reference ||
+              providerData?.data?.reference ||
+              null,
+
+            completedAt:
+              admin.firestore
+                .FieldValue
+                .serverTimestamp(),
+
+            updatedAt:
+              admin.firestore
+                .FieldValue
+                .serverTimestamp(),
+          },
+          {
+            merge: true,
+          }
+        );
+
+        const currentUser =
+          await getUser(uid);
+
+        const balanceAfter =
+          money(
+            currentUser
+              ?.walletBalance ||
+            0
+          );
+
+        await db()
+          .collection(
+            "walletHistory"
+          )
+          .add({
+            uid,
+
+            type:
+              "debit",
+
+            amount:
+              -amount,
+
+            grossAmount:
+              amount,
+
+            fee: 0,
+
+            balanceAfter,
+
+            method:
+              "cheapdatahub",
+
+            reference:
+              providerData?.reference ||
+              id,
+
+            description:
+              `Data purchase ${network} ${bundleId}`,
+
+            createdAt:
+              admin.firestore
+                .FieldValue
+                .serverTimestamp(),
+          });
+
+        return res.json({
+          success: true,
+
+          requestId: id,
+
+          reference:
+            providerData?.reference ||
+            id,
+
+          status:
+            "completed",
+
+          message:
+            providerData?.message ||
+            "Data purchase successful",
+        });
+      }
+
+      // ------------------------------------------------------
+      // PROVIDER FAILURE
+      // ------------------------------------------------------
+
+      const statusCode =
+        Number(
+          providerResponse.status ||
+          500
+        );
+
+      if (
+        statusCode >= 400 &&
+        statusCode !== 500
+      ) {
+
+        await refundWallet(
+          uid,
+          amount,
+          id,
+          providerData?.message ||
+            "CheapDataHub rejected transaction"
+        );
+
+        await transactionRef.set(
+          {
+            status:
+              "failed",
+
+            providerResponse:
+              providerData,
+
+            updatedAt:
+              admin.firestore
+                .FieldValue
+                .serverTimestamp(),
+          },
+          {
+            merge: true,
+          }
+        );
+
+        return res.status(400).json({
+          success: false,
+
+          requestId: id,
+
+          status:
+            "failed",
+
+          message:
+            providerData?.message ||
+            "Data purchase failed",
+        });
+      }
+
+      // ------------------------------------------------------
+      // UNKNOWN / PROCESSING
+      // ------------------------------------------------------
+
+      await transactionRef.set(
+        {
+          status:
+            "processing",
+
+          providerResponse:
+            providerData,
+
+          updatedAt:
+            admin.firestore
+              .FieldValue
+              .serverTimestamp(),
+        },
+        {
+          merge: true,
+        }
+      );
+
+      return res.status(202).json({
+        success: false,
+
+        processing: true,
+
+        requestId: id,
+
+        message:
+          providerData?.message ||
+          "Purchase is being processed",
+      });
+    }
+
+    catch (error) {
+
+      if (
+        error.message ===
+        "INSUFFICIENT_WALLET"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Insufficient wallet balance",
+        });
+      }
+
+      if (
+        error.message ===
+        "USER_NOT_FOUND"
+      ) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "User not found",
+        });
+      }
+
+      console.error(
+        "BUY DATA ERROR:",
+        error?.response?.data ||
+        error.message
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          errorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// TRANSACTION STATUS
+// ============================================================
+
+app.get(
+  "/api/vtpass/transaction/:requestId",
+  requireFirebaseAuth,
+  async (req, res) => {
+    try {
+
+      const id =
+        cleanString(
+          req.params.requestId
+        );
+
+      const snap =
+        await db()
+          .collection(
+            "transactions"
+          )
+          .doc(id)
+          .get();
+
+      if (
+        !snap.exists
+      ) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Transaction not found",
+        });
+      }
+
+      const data =
+        snap.data();
+
+      if (
+        data.uid !==
+        req.user.uid
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Access denied",
+        });
+      }
+
+      return res.json({
+        success: true,
+
+        transaction: {
+          id:
+            snap.id,
+
+          ...data,
+        },
+      });
+    }
+
+    catch (error) {
+
+      return res.status(500).json({
+        success: false,
+        message:
+          errorMessage(error),
+      });
+    }
+  }
+);
+
+// ============================================================
+// USER PROFILE
+// ============================================================
+
+app.get(
+  "/api/user/profile/:uid",
+  requireFirebaseAuth,
+  requireOwnUid,
+  async (req, res) => {
+    try {
+
+      const user =
+        await getUser(
+          req.params.uid
+        );
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
           message:
             "User not found",
         });
@@ -2560,1463 +2217,44 @@ app.get(
           uid:
             req.params.uid,
 
-          name:
-            userData.name ||
-            userData.displayName ||
-            "",
-
           email:
-            userData.email ||
-            "",
+            user.email || "",
+
+          firstName:
+            user.firstName || "",
+
+          lastName:
+            user.lastName || "",
 
           phone:
-            userData.phone ||
-            "",
+            user.phone || "",
 
           walletBalance:
-            toMoney(
-              userData.walletBalance ||
-                0
+            money(
+              user.walletBalance ||
+              0
             ),
+
+          virtualAccount:
+            user.virtualAccount ||
+            null,
         },
       });
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
     }
-  }
-);
 
-// ============================================================
-// WALLET HISTORY
-// ============================================================
-
-app.get(
-  "/api/wallet/:uid/history",
-  requireFirebaseAuth,
-  requireOwnUid,
-  async (req, res) => {
-    try {
-      const snapshot =
-        await db
-          .collection(
-            "walletHistory"
-          )
-          .where(
-            "uid",
-            "==",
-            req.params.uid
-          )
-          .limit(100)
-          .get();
-
-      const history =
-        snapshot.docs
-          .map((doc) => ({
-            id:
-              doc.id,
-
-            ...formatFirestoreData(
-              doc.data()
-            ),
-          }))
-          .sort(
-            (a, b) => {
-              const aTime =
-                a.createdAt
-                  ? new Date(
-                      a.createdAt
-                    ).getTime()
-                  : 0;
-
-              const bTime =
-                b.createdAt
-                  ? new Date(
-                      b.createdAt
-                    ).getTime()
-                  : 0;
-
-              return (
-                bTime -
-                aTime
-              );
-            }
-          );
-
-      return res.json({
-        success: true,
-
-        history,
-      });
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// SERVICE TRANSACTION STATUS
-// ============================================================
-
-app.get(
-  "/api/vtpass/transaction/:requestId",
-  requireFirebaseAuth,
-  async (req, res) => {
-    try {
-      const requestId =
-        cleanString(
-          req.params.requestId
-        );
-
-      if (!requestId) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Request ID is required",
-        });
-      }
-
-      const doc =
-        await db
-          .collection(
-            "serviceTransactions"
-          )
-          .doc(requestId)
-          .get();
-
-      if (!doc.exists) {
-        return res.status(404).json({
-          success: false,
-
-          message:
-            "Transaction not found",
-        });
-      }
-
-      const data =
-        doc.data();
-
-      if (
-        data.uid !==
-        req.user.uid
-      ) {
-        return res.status(403).json({
-          success: false,
-
-          message:
-            "Unauthorized",
-        });
-      }
-
-      return res.json({
-        success: true,
-
-        transaction:
-          formatFirestoreData({
-            id:
-              doc.id,
-
-            ...data,
-          }),
-      });
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// PAYSTACK
-// ============================================================
-
-function paystackHeaders() {
-  return {
-    Authorization:
-      `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-
-    "Content-Type":
-      "application/json",
-
-    Accept:
-      "application/json",
-  };
-}
-
-function checkPaystack(
-  req,
-  res,
-  next
-) {
-  if (
-    !process.env.PAYSTACK_SECRET_KEY
-  ) {
-    return res.status(503).json({
-      success: false,
-
-      message:
-        "Paystack secret key is not configured",
-    });
-  }
-
-  next();
-}
-
-// ============================================================
-// PROCESS SUCCESSFUL PAYMENT
-// ============================================================
-
-async function processSuccessfulPayment(
-  reference,
-  payment
-) {
-  const snapshot =
-    await db
-      .collection(
-        "walletTransactions"
-      )
-      .where(
-        "reference",
-        "==",
-        reference
-      )
-      .limit(1)
-      .get();
-
-  if (snapshot.empty) {
-    throw new Error(
-      "Funding transaction not found"
-    );
-  }
-
-  const transactionDoc =
-    snapshot.docs[0];
-
-  const transactionRef =
-    transactionDoc.ref;
-
-  const fundingTransaction =
-    transactionDoc.data();
-
-  const uid =
-    fundingTransaction.uid ||
-    fundingTransaction.userId;
-
-  if (!uid) {
-    throw new Error(
-      "Funding transaction has no user ID"
-    );
-  }
-
-  const paidAmount =
-    Number(
-      payment.amount || 0
-    ) / 100;
-
-  const expectedAmount =
-    Number(
-      fundingTransaction.amount ||
-        0
-    );
-
-  if (
-    Math.round(
-      paidAmount * 100
-    ) !==
-    Math.round(
-      expectedAmount * 100
-    )
-  ) {
-    throw new Error(
-      "Payment amount mismatch"
-    );
-  }
-
-  return db.runTransaction(
-    async (transactionDb) => {
-      const fresh =
-        await transactionDb.get(
-          transactionRef
-        );
-
-      const freshData =
-        fresh.data() || {};
-
-      const userRef =
-        db.collection(
-          "users"
-        ).doc(uid);
-
-      const user =
-        await transactionDb.get(
-          userRef
-        );
-
-      if (!user.exists) {
-        throw new Error(
-          "User account not found"
-        );
-      }
-
-      const currentBalance =
-        Number(
-          user.data()
-            ?.walletBalance ||
-            0
-        );
-
-      if (
-        freshData.status ===
-        "completed"
-      ) {
-        return {
-          alreadyProcessed:
-            true,
-
-          newBalance:
-            currentBalance,
-
-          amount:
-            expectedAmount,
-        };
-      }
-
-      const newBalance =
-        toMoney(
-          currentBalance +
-            expectedAmount
-        );
-
-      transactionDb.update(
-        userRef,
-        {
-          walletBalance:
-            newBalance,
-
-          updatedAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-        }
-      );
-
-      transactionDb.update(
-        transactionRef,
-        {
-          status:
-            "completed",
-
-          paystackStatus:
-            payment.status ||
-            "success",
-
-          paystackReference:
-            reference,
-
-          paidAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-
-          verifiedAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-
-          updatedAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-        }
-      );
-
-      const historyRef =
-        db.collection(
-          "walletHistory"
-        ).doc(
-          `credit-${reference}`
-        );
-
-      transactionDb.set(
-        historyRef,
-        {
-          uid,
-
-          transactionId:
-            transactionRef.id,
-
-          reference,
-
-          type:
-            "credit",
-
-          amount:
-            expectedAmount,
-
-          balanceAfter:
-            newBalance,
-
-          method:
-            "paystack",
-
-          createdAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-        },
-        {
-          merge: true,
-        }
-      );
-
-      return {
-        alreadyProcessed:
-          false,
-
-        newBalance,
-
-        amount:
-          expectedAmount,
-      };
-    }
-  );
-}
-
-// ============================================================
-// PAYSTACK WEBHOOK
-// ============================================================
-
-app.post(
-  "/api/payment/webhook",
-  async (req, res) => {
-    try {
-      const secret =
-        process.env.PAYSTACK_SECRET_KEY;
-
-      if (!secret) {
-        return res
-          .status(503)
-          .send(
-            "Paystack secret key not configured"
-          );
-      }
-
-      const signature =
-        req.headers[
-          "x-paystack-signature"
-        ];
-
-      if (!signature) {
-        return res
-          .status(401)
-          .send(
-            "Missing signature"
-          );
-      }
-
-      const hash =
-        crypto
-          .createHmac(
-            "sha512",
-            secret
-          )
-          .update(req.body)
-          .digest("hex");
-
-      const receivedBuffer =
-        Buffer.from(
-          String(signature),
-          "utf8"
-        );
-
-      const expectedBuffer =
-        Buffer.from(
-          hash,
-          "utf8"
-        );
-
-      if (
-        receivedBuffer.length !==
-          expectedBuffer.length ||
-        !crypto.timingSafeEqual(
-          receivedBuffer,
-          expectedBuffer
-        )
-      ) {
-        return res
-          .status(401)
-          .send(
-            "Invalid signature"
-          );
-      }
-
-      const event =
-        JSON.parse(
-          req.body.toString(
-            "utf8"
-          )
-        );
-
-      if (
-        event.event !==
-        "charge.success"
-      ) {
-        return res.json({
-          success: true,
-
-          ignored: true,
-        });
-      }
-
-      const reference =
-        event?.data?.reference;
-
-      if (!reference) {
-        return res.json({
-          success: true,
-
-          ignored: true,
-        });
-      }
-
-      await processSuccessfulPayment(
-        reference,
-        event.data
-      );
-
-      return res.json({
-        success: true,
-      });
-    } catch (error) {
-      console.error(
-        "PAYSTACK WEBHOOK ERROR:",
-        error
-      );
+    catch (error) {
 
       return res.status(500).json({
         success: false,
-
         message:
-          "Webhook processing failed",
+          errorMessage(error),
       });
     }
   }
 );
 
 // ============================================================
-// PAYSTACK INITIALIZE
-// ============================================================
-
-app.post(
-  "/api/payment/initialize",
-  requireFirebaseAuth,
-  checkPaystack,
-  async (req, res) => {
-    try {
-      const {
-        uid,
-        email,
-        amount,
-      } = req.body;
-
-      if (
-        !uid ||
-        uid !==
-          req.user.uid
-      ) {
-        return res.status(403).json({
-          success: false,
-
-          message:
-            "Unauthorized user",
-        });
-      }
-
-      const cleanEmail =
-        cleanString(
-          email
-        );
-
-      const fundingAmount =
-        toMoney(amount);
-
-      if (
-        !isValidEmail(
-          cleanEmail
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Valid email is required",
-        });
-      }
-
-      if (
-        fundingAmount <
-        MINIMUM_FUNDING_AMOUNT
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            `Minimum funding amount is ₦${MINIMUM_FUNDING_AMOUNT}`,
-        });
-      }
-
-      const reference =
-        generateRequestId(
-          "FUND"
-        );
-
-      const response =
-        await axios.post(
-          `${PAYSTACK_BASE_URL}/transaction/initialize`,
-          {
-            email:
-              cleanEmail,
-
-            amount:
-              Math.round(
-                fundingAmount *
-                  100
-              ),
-
-            reference,
-
-            metadata: {
-              uid,
-
-              purpose:
-                "wallet_funding",
-            },
-
-            callback_url:
-              process.env
-                .PAYSTACK_CALLBACK_URL ||
-              undefined,
-          },
-          {
-            headers:
-              paystackHeaders(),
-
-            timeout:
-              30000,
-          }
-        );
-
-      await db
-        .collection(
-          "walletTransactions"
-        )
-        .doc(reference)
-        .set({
-          uid,
-
-          userId:
-            uid,
-
-          reference,
-
-          amount:
-            fundingAmount,
-
-          currency:
-            "NGN",
-
-          status:
-            "pending",
-
-          fundingMethod:
-            "online",
-
-          createdAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-
-          updatedAt:
-            admin.firestore
-              .FieldValue
-              .serverTimestamp(),
-        });
-
-      return res.json({
-        success: true,
-
-        reference,
-
-        authorization_url:
-          response.data
-            ?.data
-            ?.authorization_url,
-
-        access_code:
-          response.data
-            ?.data
-            ?.access_code,
-      });
-    } catch (error) {
-      console.error(
-        "PAYSTACK INITIALIZE ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// PAYSTACK VERIFY
-// ============================================================
-
-app.get(
-  "/api/payment/verify/:reference",
-  requireFirebaseAuth,
-  checkPaystack,
-  async (req, res) => {
-    try {
-      const reference =
-        cleanString(
-          req.params.reference
-        );
-
-      if (!reference) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Payment reference is required",
-        });
-      }
-
-      const snapshot =
-        await db
-          .collection(
-            "walletTransactions"
-          )
-          .where(
-            "reference",
-            "==",
-            reference
-          )
-          .limit(1)
-          .get();
-
-      if (snapshot.empty) {
-        return res.status(404).json({
-          success: false,
-
-          message:
-            "Funding transaction not found",
-        });
-      }
-
-      const transaction =
-        snapshot.docs[0]
-          .data();
-
-      const uid =
-        transaction.uid ||
-        transaction.userId;
-
-      if (
-        uid !==
-        req.user.uid
-      ) {
-        return res.status(403).json({
-          success: false,
-
-          message:
-            "Unauthorized transaction",
-        });
-      }
-
-      const response =
-        await axios.get(
-          `${PAYSTACK_BASE_URL}/transaction/verify/${encodeURIComponent(
-            reference
-          )}`,
-          {
-            headers:
-              paystackHeaders(),
-
-            timeout:
-              30000,
-          }
-        );
-
-      const payment =
-        response.data?.data;
-
-      if (
-        payment?.status ===
-        "success"
-      ) {
-        const result =
-          await processSuccessfulPayment(
-            reference,
-            payment
-          );
-
-        return res.json({
-          success: true,
-
-          status:
-            "success",
-
-          result,
-        });
-      }
-
-      return res.json({
-        success: true,
-
-        status:
-          payment?.status ||
-          "pending",
-
-        payment,
-      });
-    } catch (error) {
-      console.error(
-        "PAYSTACK VERIFY ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// PAYMENT STATUS
-// ============================================================
-
-app.get(
-  "/api/payment/status/:reference",
-  requireFirebaseAuth,
-  async (req, res) => {
-    try {
-      const reference =
-        cleanString(
-          req.params.reference
-        );
-
-      const snapshot =
-        await db
-          .collection(
-            "walletTransactions"
-          )
-          .where(
-            "reference",
-            "==",
-            reference
-          )
-          .limit(1)
-          .get();
-
-      if (snapshot.empty) {
-        return res.status(404).json({
-          success: false,
-
-          message:
-            "Funding transaction not found",
-        });
-      }
-
-      const transaction =
-        snapshot.docs[0]
-          .data();
-
-      const uid =
-        transaction.uid ||
-        transaction.userId;
-
-      if (
-        uid !==
-        req.user.uid
-      ) {
-        return res.status(403).json({
-          success: false,
-
-          message:
-            "Unauthorized transaction",
-        });
-      }
-
-      return res.json({
-        success: true,
-
-        transaction:
-          formatFirestoreData(
-            transaction
-          ),
-      });
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// SUPPORT AGENTS
-// ============================================================
-
-const SUPPORT_AGENTS = {
-  wale: {
-    id:
-      "wale",
-
-    name:
-      "Wale",
-
-    role:
-      "Customer Support Agent",
-
-    style:
-      "Friendly, calm, professional and helpful.",
-  },
-
-  "led/s": {
-    id:
-      "led/s",
-
-    name:
-      "LED/S",
-
-    role:
-      "Senior Customer Support Agent",
-
-    style:
-      "Professional, concise, technical and solution-focused.",
-  },
-};
-
-async function supportBuildContext(
-  uid
-) {
-  const {
-    userData,
-  } = await getUser(uid);
-
-  if (!userData) {
-    return {
-      customer:
-        null,
-
-      wallet:
-        null,
-
-      recentTransactions:
-        [],
-    };
-  }
-
-  const transactions =
-    await db
-      .collection(
-        "serviceTransactions"
-      )
-      .where(
-        "uid",
-        "==",
-        uid
-      )
-      .limit(20)
-      .get();
-
-  return {
-    customer: {
-      uid,
-
-      name:
-        userData.name ||
-        userData.displayName ||
-        "",
-
-      walletBalance:
-        toMoney(
-          userData.walletBalance ||
-            0
-        ),
-    },
-
-    wallet: {
-      walletBalance:
-        toMoney(
-          userData.walletBalance ||
-            0
-        ),
-    },
-
-    recentTransactions:
-      transactions.docs
-        .map(
-          (doc) => ({
-            id:
-              doc.id,
-
-            ...formatFirestoreData(
-              doc.data()
-            ),
-          })
-        )
-        .sort(
-          (a, b) => {
-            const aTime =
-              a.createdAt
-                ? new Date(
-                    a.createdAt
-                  ).getTime()
-                : 0;
-
-            const bTime =
-              b.createdAt
-                ? new Date(
-                    b.createdAt
-                  ).getTime()
-                : 0;
-
-            return (
-              bTime -
-              aTime
-            );
-          }
-        ),
-  };
-}
-
-app.get(
-  "/api/support/agents",
-  requireFirebaseAuth,
-  async (req, res) => {
-    return res.json({
-      success: true,
-
-      agents:
-        Object.values(
-          SUPPORT_AGENTS
-        ),
-    });
-  }
-);
-
-// ============================================================
-// AI SUPPORT
-// ============================================================
-
-function checkAI(
-  req,
-  res,
-  next
-) {
-  if (
-    !process.env.OPENAI_API_KEY
-  ) {
-    return res.status(503).json({
-      success: false,
-
-      message:
-        "AI support is not configured",
-    });
-  }
-
-  next();
-}
-
-const SUPPORT_SYSTEM_PROMPT = `
-You are the official AI customer support assistant
-for ISMAIL DEEN DATA.
-
-You help customers with:
-
-- Wallet balance
-- Wallet funding
-- Paystack
-- Data
-- Airtime
-- Electricity
-- Cable TV
-- Transaction status
-- Failed transactions
-- Pending transactions
-
-IMPORTANT:
-
-1. Only use backend context.
-2. Never invent transaction status.
-3. Never invent payment confirmation.
-4. Never change wallet balance.
-5. Never debit wallet.
-6. Never credit wallet.
-7. Never issue refunds yourself.
-8. Never expose API keys.
-9. Never expose Firebase credentials.
-10. Never expose internal secrets.
-11. If transaction is pending, say pending.
-12. If transaction failed and backend says refunded, explain that.
-13. If backend information is insufficient, recommend human support.
-14. Answer in Hausa when the customer uses Hausa.
-15. Keep answers simple.
-16. You are READ-ONLY.
-`;
-
-async function generateAIResponse({
-  agent,
-  message,
-  context,
-}) {
-  const selected =
-    SUPPORT_AGENTS[
-      agent
-    ] ||
-    SUPPORT_AGENTS.wale;
-
-  const input = `
-Agent:
-${selected.name}
-
-Role:
-${selected.role}
-
-Style:
-${selected.style}
-
-Backend context:
-${JSON.stringify(
-  context,
-  null,
-  2
-)}
-
-Customer:
-${message}
-`;
-
-  const response =
-    await axios.post(
-      `${OPENAI_BASE_URL}/responses`,
-      {
-        model:
-          OPENAI_MODEL,
-
-        instructions:
-          SUPPORT_SYSTEM_PROMPT,
-
-        input,
-
-        max_output_tokens:
-          700,
-      },
-      {
-        headers: {
-          Authorization:
-            `Bearer ${process.env.OPENAI_API_KEY}`,
-
-          "Content-Type":
-            "application/json",
-        },
-
-        timeout:
-          60000,
-      }
-    );
-
-  let text =
-    response.data
-      ?.output_text ||
-    "";
-
-  if (!text) {
-    const output =
-      response.data
-        ?.output || [];
-
-    const parts = [];
-
-    for (
-      const item of
-      output
-    ) {
-      if (
-        item.type ===
-        "message"
-      ) {
-        for (
-          const content of
-          item.content ||
-          []
-        ) {
-          if (
-            content.type ===
-              "output_text" &&
-            content.text
-          ) {
-            parts.push(
-              content.text
-            );
-          }
-        }
-      }
-    }
-
-    text =
-      parts.join(
-        "\n"
-      );
-  }
-
-  if (!text) {
-    throw new Error(
-      "AI returned empty response"
-    );
-  }
-
-  return text.trim();
-}
-
-// ============================================================
-// AI SUPPORT CHAT
-// ============================================================
-
-app.post(
-  "/api/support/chat",
-  requireFirebaseAuth,
-  checkAI,
-  async (req, res) => {
-    try {
-      const message =
-        cleanString(
-          req.body.message
-        );
-
-      const agent =
-        SUPPORT_AGENTS[
-          req.body.agent
-        ]
-          ? req.body.agent
-          : "wale";
-
-      if (!message) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Customer message is required",
-        });
-      }
-
-      const context =
-        await supportBuildContext(
-          req.user.uid
-        );
-
-      const reply =
-        await generateAIResponse({
-          agent,
-
-          message,
-
-          context,
-        });
-
-      return res.json({
-        success: true,
-
-        agent:
-          SUPPORT_AGENTS[
-            agent
-          ],
-
-        reply,
-
-        context: {
-          walletBalance:
-            context.wallet
-              ?.walletBalance ||
-            0,
-
-          recentTransactions:
-            context.recentTransactions,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "AI SUPPORT ERROR:",
-        error?.response
-          ?.data || error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        message:
-          "AI support is temporarily unavailable",
-      });
-    }
-  }
-);
-
-// ============================================================
-// SUPPORT ESCALATION
-// ============================================================
-
-app.post(
-  "/api/support/escalate",
-  requireFirebaseAuth,
-  async (req, res) => {
-    try {
-      const ref =
-        db.collection(
-          "supportEscalations"
-        ).doc();
-
-      await ref.set({
-        uid:
-          req.user.uid,
-
-        agent:
-          req.body.agent ||
-          "wale",
-
-        reason:
-          cleanString(
-            req.body.reason
-          ) ||
-          "Customer requested human support",
-
-        customerMessage:
-          cleanString(
-            req.body.message
-          ),
-
-        status:
-          "open",
-
-        createdAt:
-          admin.firestore
-            .FieldValue
-            .serverTimestamp(),
-
-        updatedAt:
-          admin.firestore
-            .FieldValue
-            .serverTimestamp(),
-      });
-
-      return res.json({
-        success: true,
-
-        message:
-          "Support escalation created",
-
-        escalationId:
-          ref.id,
-      });
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
-  }
-);
-
-// ============================================================
-// HEALTH
-// ============================================================
-
-app.get(
-  "/api/health",
-  (req, res) => {
-    res.json({
-      success: true,
-
-      status:
-        "online",
-
-      app:
-        APP_NAME,
-
-      firebase:
-        Boolean(db),
-
-      cheapDataHub:
-        Boolean(
-          process.env
-            .CHEAPDATAHUB_API_KEY
-        ),
-
-      paystack:
-        Boolean(
-          process.env
-            .PAYSTACK_SECRET_KEY
-        ),
-
-      ai:
-        Boolean(
-          process.env
-            .OPENAI_API_KEY
-        ),
-
-      time:
-        new Date().toISOString(),
-    });
-  }
-);
-
-// ============================================================
-// HOME
+// ROOT
 // ============================================================
 
 app.get(
@@ -4031,57 +2269,37 @@ app.get(
       message:
         "ISMAIL DEEN DATA backend is running",
 
-      provider:
-        "CheapDataHub",
+      walletFunding:
+        "Paystack Dedicated Virtual Account",
 
-      version:
-        "2.0.0",
+      depositCharge:
+        "₦30",
+
+      minimumDeposit:
+        `₦${MIN_DEPOSIT}`,
     });
   }
 );
 
 // ============================================================
-// FIREBASE TEST
+// HEALTH
 // ============================================================
 
 app.get(
-  "/api/firebase/test",
-  requireFirebaseAuth,
-  async (req, res) => {
-    try {
-      const snapshot =
-        await db
-          .collection(
-            "users"
-          )
-          .limit(1)
-          .get();
+  "/health",
+  (req, res) => {
+    res.json({
+      success: true,
 
-      return res.json({
-        success: true,
+      status:
+        "ok",
 
-        firebase:
-          "connected",
+      app:
+        APP_NAME,
 
-        usersCollectionAccessible:
-          true,
-
-        sampleCount:
-          snapshot.size,
-      });
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-
-        firebase:
-          "error",
-
-        message:
-          getErrorMessage(
-            error
-          ),
-      });
-    }
+      time:
+        new Date().toISOString(),
+    });
   }
 );
 
@@ -4091,7 +2309,7 @@ app.get(
 
 app.use(
   (req, res) => {
-    return res.status(404).json({
+    res.status(404).json({
       success: false,
 
       message:
@@ -4104,30 +2322,18 @@ app.use(
 );
 
 // ============================================================
-// GLOBAL ERROR
+// ERROR HANDLER
 // ============================================================
 
 app.use(
-  (
-    error,
-    req,
-    res,
-    next
-  ) => {
+  (error, req, res, next) => {
+
     console.error(
-      "GLOBAL ERROR:",
+      "UNHANDLED ERROR:",
       error
     );
 
-    if (
-      res.headersSent
-    ) {
-      return next(
-        error
-      );
-    }
-
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
 
       message:
@@ -4143,23 +2349,33 @@ app.use(
 app.listen(
   PORT,
   () => {
+
     console.log(
-      `${APP_NAME} server running on port ${PORT}`
+      "================================================"
     );
 
     console.log(
-      `Environment: ${
-        process.env.NODE_ENV ||
-        "development"
-      }`
+      `${APP_NAME} SERVER RUNNING`
     );
 
     console.log(
-      `CheapDataHub: ${CHEAPDATAHUB_BASE_URL}`
+      `PORT: ${PORT}`
     );
 
     console.log(
-      `AI Model: ${OPENAI_MODEL}`
+      "WALLET FUNDING: PAYSTACK DVA"
+    );
+
+    console.log(
+      `CUSTOMER DEPOSIT CHARGE: ₦${DEPOSIT_FEE}`
+    );
+
+    console.log(
+      `MINIMUM DEPOSIT: ₦${MIN_DEPOSIT}`
+    );
+
+    console.log(
+      "================================================"
     );
   }
 );
